@@ -83,7 +83,19 @@ Each channel is one object with namespaced schema ids (for example `ch2.filter.c
 | Timeline | keyframes for the window |
 | Strip | fader, pan, mute, solo, drone/event balance knob |
 
-### 4.1 UI layout
+### 4.1 Granular loudness match
+
+In the prototype a Granular filter is about 10 dB quieter (RMS) than a Window filter with the same center, width, softness and level, and passes almost nothing about 19% of the time. Causes: grain width is independent of the filter width (about 0.05 against 0.3); at default density only about 2 grains overlap at once; each grain's squared-Hann envelope averages 0.5 and nothing compensates.
+
+Requirement: Granular and Window channels must match in level.
+
+- The dsp module computes the **expected RMS spectral coverage** of the granular filter (grain size, density, scatter, duration, span, softness, level) and compares it with the equivalent plain window (same center, width, softness, level).
+- The ratio is a **loudness-match gain** carried in the control frame and smoothed in the strip. It scales both drone and events.
+- It is statistical (time-averaged), not instantaneous, so there is no pumping and grains stay stateless and loop-exact.
+- Always on; no toggle. Capped at +20 dB; below that density, exact matching is not possible and the cap applies.
+- Test: granular and equivalent-window RMS agree within ±1 dB across a grid of parameter settings. This is part of the engine contract tests.
+
+### 4.2 UI layout
 
 ```
 Header   title · transport (play, BPM, internal | MIDI) · listen
@@ -170,9 +182,9 @@ Everything downstream of the spectrum (voices, comb, noise, window, vertical win
 
 ## 9. Testing
 
-- **Characterization first.** Before refactoring, capture golden outputs from the prototype: Allende's detected bands and positions, window values, partial tables and a short render. The new code must reproduce them in the default configuration.
+- **Characterization first.** Before refactoring, capture golden outputs from the prototype: Allende's detected bands and positions, window values, partial tables and a short render. The new code must reproduce them in the default configuration. Granular output is the exception: it is expected to differ from the prototype by the loudness-match gain (section 4.1).
 - `node --test` for pure modules: schema integrity (unique ids, defaults within range); modulation evaluator (sums, clamping, per-voice envelopes); transport (beat/second conversion, MIDI tick parsing, tempo smoothing, clock loss); analysis; parsers; loop seamlessness.
-- Engine contract tests (frames in, audio out) that any Voice Engine must pass, including a future Faust one.
+- Engine contract tests (frames in, audio out) that any Voice Engine must pass, including a future Faust one. These include the granular loudness-match test (section 4.1).
 - A browser smoke page and a short manual checklist for UI and MIDI (needs a device or virtual port).
 
 ## 10. Error handling
