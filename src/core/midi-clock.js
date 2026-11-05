@@ -79,8 +79,14 @@ export class MidiClockFollower {
 
   /** 'idle' (no clock, or transport stopped), 'lost' (running but silent too long), 'ok'. */
   poll(tSec) {
-    if (this._lostStopped) return 'lost';
     const tr = this.transport;
+    if (this._lostStopped) {
+      if (!tr.running) return 'lost';
+      // The user took over (pressed Play) during the hold: drop the auto-resume and wait for a
+      // fresh tick before judging the clock again, so a dead clock cannot re-stop their Play.
+      this._lostStopped = false;
+      this._lastTickT = null;
+    }
     if (this._lastTickT === null || !tr.running) return 'idle';
     if (tSec - this._lastTickT > this.lostAfterSec) {
       tr.stop(tSec); // hold position; exactly once per loss
@@ -102,11 +108,10 @@ export class MidiClockFollower {
     tr.source = 'midi';
     this._engaged = true;
     const prev = this._lastTickT;
-    const resumed = this._lostStopped;
     if (prev === null || t > prev) this._lastTickT = t;
-    if (resumed) { // clock is back after a hold: resume, and don't measure across the gap
+    if (this._lostStopped) { // clock is back after a hold: don't measure across the gap
       this._lostStopped = false;
-      tr.start(t);
+      if (!tr.running) tr.start(t); // already running means the user took over; leave it
       return;
     }
     if (prev === null) return;

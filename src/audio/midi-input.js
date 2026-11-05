@@ -44,6 +44,7 @@ export async function connect(inputId, follower, clock, onCc) {
   const acc = await access();
   const input = acc.inputs.get(inputId);
   if (!input) throw new Error(`MIDI input not found: ${inputId}`);
+  if (typeof input.open === 'function') await input.open();
   let last = -Infinity;
   const onMessage = (ev) => {
     const data = ev.data;
@@ -62,5 +63,9 @@ export async function connect(inputId, follower, clock, onCc) {
     follower.handle(data, t);
   };
   input.addEventListener('midimessage', onMessage);
-  return () => input.removeEventListener('midimessage', onMessage);
+  // `acc` is captured so the MIDIAccess object stays reachable (and its ports alive) while connected.
+  return () => {
+    input.removeEventListener('midimessage', onMessage);
+    void acc;
+  };
 }
