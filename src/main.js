@@ -2,6 +2,7 @@
 // From file:// the classic guard in app.html has already replaced the page with the "serve over HTTP(S)"
 // message (and Chrome refuses module loads from file:// anyway): do no work there.
 if (typeof location === 'undefined' || location.protocol !== 'file:') {
+  try {
   const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { EXAMPLE_LAYERS }] = await Promise.all([
     import('./core/state.js'),
     import('./ui/app-state.js'),
@@ -47,4 +48,9 @@ if (typeof location === 'undefined' || location.protocol !== 'file:') {
 
   window.__app = { store, app, panel };
   console.info('app shell loaded');
+  } catch (e) {
+    console.error(e);
+    const m = document.getElementById('msg') || document.body.appendChild(document.createElement('p'));
+    m.id = 'msg'; m.textContent = 'The app failed to start: ' + (e && e.message || e);
+  }
 }

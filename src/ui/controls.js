@@ -76,7 +76,7 @@ const ENUM_LABELS = { 'vwin.mode': { 0: 'Off', 1: 'Reflectance', 2: 'Depth' } };
 function el(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
-    if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k === 'tip') e.dataset.tip = v; else e.setAttribute(k, v);
+    if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k === 'tip') { if (v != null && v !== '') e.dataset.tip = v; } else e.setAttribute(k, v);
   }
   for (const c of kids) e.append(c);
   return e;
@@ -109,6 +109,7 @@ export function bindParam(host, id, store, opts = {}) {
       const v = store.get(id);
       inp.value = String(Math.round(toSliderPos(def, v)));
       out.textContent = formatParam(def, v, opts);
+      inp.setAttribute('aria-valuetext', out.textContent);
       const live = def.modulatable && opts.live ? opts.live() : null;
       const lv = live ? live[id] : undefined;
       if (typeof lv === 'number' && Number.isFinite(lv) && Math.abs(lv - v) > (def.max - def.min) * 1e-3) {
@@ -146,6 +147,7 @@ export function bindParam(host, id, store, opts = {}) {
     const writeFree = () => {
       const value = +num.value;
       if (Number.isFinite(value) && value > 0) store.set(id, { mode: unit.value, value });
+      else redraw(); // invalid: revert the field to the stored value
     };
     bS.addEventListener('click', () => store.set(id, { mode: 'beats', div: div.value }));
     bF.addEventListener('click', () => { const cur = store.get(id); store.set(id, { mode: unit.value, value: cur.mode === 'beats' ? (+num.value > 0 ? +num.value : 1) : cur.value }); });
@@ -158,7 +160,7 @@ export function bindParam(host, id, store, opts = {}) {
       bS.setAttribute('aria-pressed', String(synced)); bF.setAttribute('aria-pressed', String(!synced));
       div.hidden = !synced; freeBox.hidden = synced;
       if (synced) div.value = Object.hasOwn(DIVISIONS, v.div) ? v.div : '1/4';
-      else { unit.value = v.mode; if (document.activeElement !== num) num.value = String(v.value); }
+      else { unit.value = v.mode; num.value = String(v.value); }
     };
   } else if (def.type === 'id') {
     root = el('div', { class: 'inline', tip: def.tip });

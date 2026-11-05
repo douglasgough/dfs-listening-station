@@ -4,6 +4,7 @@
  *
  * Choices:
  * - A channel whose `source.layer` is '' or 'none' is "unassigned" and gets every newly added layer id.
+ * - 'none' (the schema default for source.layer) counts as empty, exactly like '', for auto-assign.
  * - removeLayer: channels that used the removed layer move to the FIRST REMAINING layer (silent if none).
  * - `stage` is the CURRENT view {unit,x0,x1} (the zoomed range, what analysis uses); `fullRange` is the unzoomed range.
  */
@@ -87,7 +88,7 @@ export function createAppState({ store, examples = [] } = {}) {
 
   /** Change the stage unit, converting the full range (else the layers' ranges) into it. */
   app.setUnit = unit => {
-    if (!app.stage) return;
+    if (!app.stage || app.stage.unit === unit) return;
     const from = app.stage.unit;
     const conv = (a, b, u0) => {
       const p = convertPosition(a, u0, unit), q = convertPosition(b, u0, unit);

@@ -133,3 +133,38 @@ test('visibility', () => {
   app.setVisible('allende', false);
   assert.equal(app.isVisible('allende'), false);
 });
+
+test('zoom, polarity, sens and mode changes give a fresh analysis', () => {
+  const { app, store } = make();
+  app.addLayer(ex('allende'));
+  const a0 = app.analysisFor(0);
+  app.zoomTo(500, 900);
+  const a1 = app.analysisFor(0);
+  assert.notEqual(a1, a0);
+  app.zoomOut();
+  assert.equal(app.analysisFor(0), a0); // same key -> cached again
+  store.set('ch1.source.sens', 0.05);
+  const a2 = app.analysisFor(0);
+  assert.notEqual(a2, a0);
+  assert.ok(a2.bands.length > a0.bands.length, `${a2.bands.length} vs ${a0.bands.length}`);
+  store.set('ch1.source.polarity', 'peaks');
+  const a3 = app.analysisFor(0);
+  assert.notEqual(a3, a2);
+  store.set('ch1.source.mode', 'direct');
+  assert.notEqual(app.analysisFor(0), a3);
+});
+
+test('removing a non-first layer leaves the stage alone; same-unit setUnit is a no-op', () => {
+  const { app } = make();
+  app.addLayer(ex('allende')); app.addLayer(ex('murchison'));
+  app.zoomTo(500, 600);
+  const stage = app.stage, v = app.version;
+  app.removeLayer('murchison');
+  assert.equal(app.stage, stage);
+  assert.equal(app.zoomStack.length, 1);
+  const v2 = app.version;
+  app.setUnit('nm');
+  assert.equal(app.version, v2);
+  assert.equal(app.zoomStack.length, 1);
+  assert.ok(v2 > v);
+});
