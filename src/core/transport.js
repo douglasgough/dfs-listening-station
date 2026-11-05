@@ -140,3 +140,21 @@ export class Transport {
     return { bpm: this.bpm };
   }
 }
+
+/**
+ * A pure linear snapshot of the transport at nowSec (span time: the transport's nowSec axis,
+ * audio-clock seconds live, render seconds offline).
+ * Returns {bpm, running, nowSec, beat, sec, beatAt(t), secAt(t)}. beatAt/secAt are pure functions
+ * of t, valid for any t (also earlier than nowSec), and unaffected by later calls on the transport.
+ * A stopped transport gives constants. Note the transport itself never runs backwards: if nowSec is
+ * earlier than the latest time it has seen, beat/sec are the values held at that latest time.
+ */
+export function timeMap(transport, nowSec) {
+  const bpm = transport.bpm, running = transport.running;
+  const beat = transport.beatAt(nowSec), sec = transport.secondsAt(nowSec);
+  return Object.freeze({
+    bpm, running, nowSec, beat, sec,
+    beatAt: (t) => (running ? beat + (t - nowSec) * bpm / 60 : beat),
+    secAt: (t) => (running ? sec + (t - nowSec) : sec),
+  });
+}

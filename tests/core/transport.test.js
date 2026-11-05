@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Transport, DIVISIONS, timeValuePeriodSec, timeValueCycles } from '../../src/core/transport.js';
+import { Transport, DIVISIONS, timeValuePeriodSec, timeValueCycles, timeMap } from '../../src/core/transport.js';
 
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, `${msg || ''} ${a} !== ${b}`);
 
@@ -258,4 +258,62 @@ test('timeValueCycles guards: bad values use 10 s fallback on sec, never NaN/Inf
   ]) {
     assert.equal(timeValueCycles(tv, t), 0.5, JSON.stringify(tv));
   }
+});
+
+// ---- timeMap (R26): a pure linear snapshot of the transport ----
+test('timeMap: running at 120 bpm, beatAt(nowSec+1) === beat+2 and secAt is linear', () => {
+  const tr = new Transport({ bpm: 120 });
+  tr.start(10);
+  const m = timeMap(tr, 13);
+  assert.equal(m.bpm, 120);
+  assert.equal(m.running, true);
+  assert.equal(m.nowSec, 13);
+  assert.equal(m.beat, 6);
+  assert.equal(m.sec, 3);
+  assert.equal(m.beatAt(13), m.beat);
+  assert.equal(m.beatAt(14), m.beat + 2);
+  assert.equal(m.secAt(13), 3);
+  assert.equal(m.secAt(14.5), 4.5);
+  near(m.secAt(13.25) - m.secAt(13), m.secAt(16.25) - m.secAt(16));
+  // earlier than nowSec is fine and linear (decreasing t)
+  assert.equal(m.beatAt(12), m.beat - 2);
+  assert.equal(m.beatAt(11), m.beat - 4);
+  assert.equal(m.secAt(11), 1);
+});
+
+test('timeMap: a stopped transport returns constants', () => {
+  const tr = new Transport({ bpm: 90 });
+  tr.start(0); tr.stop(4);
+  const m = timeMap(tr, 20);
+  assert.equal(m.running, false);
+  assert.equal(m.beat, 6);
+  assert.equal(m.sec, 4);
+  for (const t of [-5, 0, 20, 100]) { assert.equal(m.beatAt(t), 6); assert.equal(m.secAt(t), 4); }
+});
+
+test('timeMap: pure (same args give identical results; later transport calls do not affect it)', () => {
+  const tr = new Transport({ bpm: 100 });
+  tr.start(1);
+  const a = timeMap(tr, 5), b = timeMap(tr, 5);
+  for (const k of ['bpm', 'running', 'nowSec', 'beat', 'sec']) assert.equal(a[k], b[k], k);
+  const ts = [9, 7, 5, 3, 1];
+  const before = ts.map(t => [a.beatAt(t), a.secAt(t)]);
+  assert.deepEqual(ts.map(t => [b.beatAt(t), b.secAt(t)]), before);
+  tr.stop(6); tr.locate(0, 7); tr.start(8);
+  assert.deepEqual(ts.map(t => [a.beatAt(t), a.secAt(t)]), before);
+});
+
+test('timeMap: after setBpm a new map reflects it, the old one is unchanged', () => {
+  const tr = new Transport({ bpm: 120 });
+  tr.start(0);
+  const old = timeMap(tr, 2);
+  const oldNext = old.beatAt(3);
+  tr.setBpm(60, 2);
+  const neu = timeMap(tr, 2);
+  assert.equal(neu.bpm, 60);
+  assert.equal(neu.beat, 4);
+  assert.equal(neu.beatAt(3), 5);
+  assert.equal(old.bpm, 120);
+  assert.equal(old.beatAt(3), oldNext);
+  assert.equal(oldNext, 6);
 });
