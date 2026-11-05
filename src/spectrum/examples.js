@@ -1,4 +1,6 @@
-/* Bundled sampled-spectrum examples (copied verbatim from the prototype) and their decoder. */
+/* Bundled sampled-spectrum examples (copied verbatim from the prototype), their decoder, and the example layers. */
+import { slugify } from './parse.js';
+
 export const EXAMPLE_LINES = [
   "mgp124|Allende|CV3|350|5|0.063946|0.120461|AABHDlGEIaKELLMjN7PLQJRPSnTlUjVYWfXTXuX3YIYaY1ZYZyaEaebLbucIcacjc9dpeeflgahYhyiNiWieiWiWiei5jTjukIkjksksk9lGlPlYlpmEmVmemnnCncn/oaoso9pPpYpYpyqEqeqnqwqwqwq5rTrcrcrTrKrKrKrKrKq5qnqEpppPo9o9o9o0osoaoIn3nunununununun3n/oIoIn/n/n/oRojo0o9o9pGpGpPpYpgpYpPpYpppypppgpYpYpgpgpypyp7p7p7qEqNqVqeqeqeqVqnqwrCrTrlrur/sIsRsjsrtGtYtyt7uEuVueununununununuwvBvKvTvcvlvuv/wIwIwIwRwjw0w9w9w9xGxGw9w9xXxyyEyVyeywzBzTzczlzTy5ynyVyEx7x7yVywzKzczlz20R0r09091G1P1X1g1p1y1p1y2E2M2n2n2w25253B3B3T3T3T3K2525253K3T3c3l3l3l3t3t3t3l3t323/3/3/3t3l3l3t323/4I4R4R4I323t3l3l3t3232323232323t3t323/3/3/4I4I4R4a4i4i4a4a4I4R4R4R3/3t3l3c3l3l3t324I4R4a4i4a4R4I3/3/4I4a4i4a4I3/3/4I4I4I3/4I4R4a4R4a4i4a4R4I4I4I4R4a4R4R4I4R4a4i4r4r4r4i4i4a4a4i405G494940404949494949495G5G5G5G5X5p575757576E6E6E6M6V6V6M6M6V6e6w657B7K7T7T7c7l7t7t728I8R8a8a8i8080808089899G9O9O9O9G9G9X9g9g9g9p979797+D+M+e+n+4/B/K/l/2/////2/T+e979p9y",
   "mgp094|Murchison|CM2|350|5|0.03999|0.059653|AAA/CXEtHEKNMXOhQsTPWkZhc2fBglhwivlGmenpocp0r+uIwFxEyDy10B1M294i5t6s6s7F648Q8d82829c9o91+b+b91828d8Q737e7e6s6T5h4u4I3v291y0az00B0N0N0B0n1A1l1A0n0B0B0B0N0Bz0zbzbz0z0zozOzOzOzCy1ycycycyQyQyQyQx3xRw4w4wrwFvHuhuhu6u6uVuVuVuVt7titJs8s8s8sws8tvuhuuuuu6uut7s8swtJtiuIt7uVtvtWsXrlrMq/rMrMrlrxsXswswswsjsjs8tJtWtWtJs8sws8tJtWtJs8s8s8sws8tWtitWtWtWtiuIvTwfwrwrwrwfwFwFwSwrw4xRxexqxqx3yDx3xexRxeyQzOz00N0B0B0Bz0zbzbz00n1Z1+1+2L2x3v383W2x2x3W384V4u4u383j385U566T6G6T6f7F7F6s6s7r8d8d737r738q9o+B+B+B+n/Z/m/N/A+b+B+B+n/Z///////z/A+n+b+O+n/A/z///Z+0+O+O+b/A/Z/m/N+b+B+B+b+n+b+n+0/Z/Z/Z/N+n+O+O+n/A+0/A/A/N/N/N/N/A/A/A/N/N/A+n+b+n+b+O+B+O+0+0+0+n+b+b/A/A+0+b+b9o8d7r8E829P828q829D9D8q8d8E7r7F7R7R7F64647R7e7e7F647F646s6f6T6T6T6T6T5t5U5U5t6G6G5t5U5h5U5H4u474u4V4I4V4i4i4V4I383W292k2k293W3K2Y2L2k3K3W3W3j3j3W2x2k293W3K2k1+1l1+2k3K3W3j3K2x2Y2k2x2x2Y2Y2x3K3W3W3j3v4I4u5U5U5H474i475U5t5U4u4i4i",
@@ -20,3 +22,28 @@ export function decodeExample(line) {
   }
   return { name: name.replace(/_/g, ' ') + ' (' + type + ')', x, y, x0: x[0], x1: x[x.length - 1], unit: 'nm' };
 }
+
+const lineLayer = (id, name, type, rows) => ({
+  id, name, kind: 'lines', quantity: 'intensity', axis: { unit: 'nm', x0: 380, x1: 700 },
+  lines: rows.map(([x, intensity, label]) => ({ x, intensity, label, type })).sort((a, b) => a.x - b.x),
+});
+
+/** The eight meteorites as reflectance layers (ids like 'allende'), plus two demonstration line lists. */
+export const EXAMPLE_LAYERS = [
+  ...EXAMPLE_LINES.map(line => {
+    const sp = decodeExample(line);
+    return {
+      id: slugify(sp.name.replace(/\s*\(.*$/, '')), name: sp.name, kind: 'sampled', quantity: 'reflectance',
+      axis: { unit: 'nm', x0: sp.x0, x1: sp.x1 }, x: sp.x, y: sp.y,
+    };
+  }),
+  lineLayer('ism-absorption', 'ISM absorption lines (demonstration data, approximate rest wavelengths)', 'abs', [
+    [588.995, 1.0, 'Na I D2'], [589.592, 0.8, 'Na I D1'], [393.366, 1.0, 'Ca II K'], [396.847, 0.85, 'Ca II H'],
+  ]),
+  lineLayer('nebula-emission', 'Nebular emission lines (demonstration data, approximate rest wavelengths)', 'em', [
+    [656.28, 1.0, 'Hα'], [486.13, 0.35, 'Hβ'], [434.05, 0.16, 'Hγ'], [410.17, 0.09, 'Hδ'],
+    [500.7, 0.9, '[O III] 500.7'], [495.9, 0.3, '[O III] 495.9'],
+    [658.3, 0.35, '[N II] 658.3'], [654.8, 0.12, '[N II] 654.8'],
+    [671.6, 0.15, '[S II] 671.6'], [673.1, 0.12, '[S II] 673.1'],
+  ]),
+];
