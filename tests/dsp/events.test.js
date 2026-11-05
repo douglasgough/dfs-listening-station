@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { evTimes, eventSpec, pickEvent, PING } from '../../src/dsp/events.js';
+import { mapFreq, snapFreq } from '../../src/dsp/mapping.js';
+import { DIVISIONS } from '../../src/core/transport.js';
 import { channelView } from '../../src/core/schema.js';
 import { createState } from '../../src/core/state.js';
 
@@ -107,4 +109,117 @@ test('pickEvent folds into [40,4200], quantises to the loop and flips pan', () =
   const flipped = pickEvent(chPick({ 'map.flip': true, 'filter.center': golden.allende.freqs[0].u, 'filter.width': 0.04, 'filter.soft': 0 }), analysis, () => 0.5);
   assert.equal(flipped.bandIndex, 0);
   near(flipped.pan, ((1 - analysis.bands[0].u) - 0.5) * 1.2);
+});
+
+// ---- span tiling ----
+function tile(ev, tm, size, total, rnd = () => 0) {
+  const all = [];
+  const n = Math.round(total / size);
+  let t0 = 0;
+  for (let i = 1; i <= n; i++) {
+    const t1 = i === n ? total : i * size; // consecutive spans share the exact boundary value
+    all.push(...evTimes(ev, t0, t1, rnd, tm));
+    t0 = t1;
+  }
+  return { all, tEnd: t0 };
+}
+const strictlyIncreasing = a => a.every((x, i) => i === 0 || x > a[i - 1]);
+
+test('beats grids tile exactly across consecutive spans (regular and pattern)', () => {
+  for (const div of ['1/4', '1/8t']) {
+    const D = DIVISIONS[div];
+    for (const bpm of [90, 120, 164.9999999999997, 133.3333333333, 200]) {
+      for (const size of [0.1, 0.0333, 0.25, 1]) {
+        const tm = { bpm, beatAt: s => s * bpm / 60 };
+        const tv = { mode: 'beats', div };
+        for (const mode of ['regular', 'pattern']) {
+          const ev = { ...base, mode, interval: tv, stepLen: tv, jitter: 0, steps: 4, pattern: [true, true, true, true] };
+          const { all, tEnd } = tile(ev, tm, size, 20);
+          const expected = Math.floor(tm.beatAt(tEnd) / D + 1e-9);
+          assert.equal(all.length, expected, `${mode} ${div} bpm ${bpm} size ${size}`);
+          assert.ok(strictlyIncreasing(all), `${mode} ${div} bpm ${bpm} size ${size} order`);
+        }
+      }
+    }
+  }
+});
+
+test('seconds grids (hz and sec) tile exactly', () => {
+  for (const tv of [{ mode: 'hz', value: 0.5 }, { mode: 'sec', value: 0.3 }, { mode: 'hz', value: 3.3333333333333335 }]) {
+    const I = tv.mode === 'hz' ? 1 / tv.value : tv.value;
+    for (const size of [0.1, 0.0333, 0.25, 1]) {
+      for (const mode of ['regular', 'pattern']) {
+        const ev = { ...base, mode, interval: tv, stepLen: tv, jitter: 0, steps: 4, pattern: [true, true, true, true] };
+        const { all, tEnd } = tile(ev, tm120, size, 20);
+        assert.equal(all.length, Math.floor(tEnd / I + 1e-9), `${mode} ${JSON.stringify(tv)} size ${size}`);
+        assert.ok(strictlyIncreasing(all));
+      }
+    }
+  }
+});
+
+test('jitter does not change which grid indices are emitted', () => {
+  const rnd = mulberry32(3);
+  for (const size of [0.1, 0.25, 1]) {
+    const tm = { bpm: 164.9999999999997, beatAt: s => s * 164.9999999999997 / 60 };
+    const plain = tile({ ...base, jitter: 0 }, tm, size, 20).all;
+    const jit = tile({ ...base, jitter: 0.3 }, tm, size, 20, rnd).all;
+    assert.equal(jit.length, plain.length, `size ${size}`);
+    // each jittered event sits within 0.3 of a period after its grid time
+    jit.forEach((x, i) => assert.ok(x >= plain[i] - 1e-9 && x <= plain[i] + 0.3 * 60 / 165 + 1e-9));
+  }
+});
+
+test('bad bpm in the time map still yields finite times', () => {
+  for (const bpm of [0, NaN, -5, Infinity]) {
+    const t = evTimes(base, 0, 2, Math.random, { bpm, beatAt: s => s * 2 });
+    assert.equal(t.length, 4);
+    assert.ok(t.every(Number.isFinite));
+    near(t[0], 0.5);
+  }
+});
+
+test('random mode consumes rnd in the prototype order (scripted)', () => {
+  const script = [0.5, 0.05, 0.5, 0.01, 0.4];
+  let n = 0;
+  const rnd = () => script[n++];
+  // rpm 60 -> rate 1/s; slices [0,.1], [.1,.2], [.2,.25]
+  const t = evTimes({ ...base, mode: 'random', rpm: 60 }, 0, 0.25, rnd, tm120);
+  assert.equal(n, 5);
+  assert.equal(t.length, 2);
+  near(t[0], 0.1 + 0.5 * 0.1);
+  near(t[1], 0.2 + 0.4 * 0.05);
+});
+
+test('pickEvent roulette picks first, middle and last band, with the boundary staying on the lower band', () => {
+  const bands = [0.2, 0.4, 0.6, 0.8].map(u => ({ u, depth: 1, fwhmU: 0.1, rel: 1 }));
+  const an = { r: new Float64Array(8).fill(1), d: new Float64Array(8), dmax: 1, bands };
+  const ch = chPick();
+  const freqOf = u => {
+    const m = { lo: ch['map.lo'], hi: ch['map.hi'], curve: ch['map.curve'], flip: ch['map.flip'], f0: ch['map.f0'], snap: ch['map.snap'] };
+    let f = snapFreq(mapFreq(u, m), m) * 2;
+    while (f > 4200) f /= 2;
+    while (f < 40) f *= 2;
+    return f;
+  };
+  // four equal weights of 1 (total 4): r = rnd * 4
+  const cases = [[0.1, 0], [0.5, 1] /* r == 2: not > 1 after one step, stays on band 1 */, [0.25, 0] /* r == 1: boundary stays on band 0 */, [0.51, 2], [0.999, 3], [0, 0]];
+  for (const [rv, want] of cases) {
+    const e = pickEvent(ch, an, () => rv);
+    assert.equal(e.bandIndex, want, `rnd ${rv}`);
+    near(e.f, freqOf(bands[want].u));
+  }
+});
+
+test('pickEvent roulette weights follow band strength', () => {
+  const bands = [{ u: 0.2, rel: 1 }, { u: 0.5, rel: 0 }, { u: 0.8, rel: 1 }].map(b => ({ depth: 1, fwhmU: 0.1, ...b }));
+  const an = { r: new Float64Array(8).fill(1), d: new Float64Array(8), dmax: 1, bands };
+  const w = [1, 0.12, 1], tot = 2.12;
+  const at = c => pickEvent(chPick(), an, () => c / tot).bandIndex;
+  assert.equal(at(0.5), 0);
+  assert.equal(at(1.05), 1);
+  assert.equal(at(1.2), 2);
+  assert.equal(at(1.12 - 1e-6), 1);
+  assert.equal(at(1.12 + 1e-6), 2);
+  assert.equal(w[0] + w[1] + w[2], tot);
 });

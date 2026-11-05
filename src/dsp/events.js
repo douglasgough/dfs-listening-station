@@ -8,6 +8,7 @@ import { mapFreq, snapFreq, channelMapping } from './mapping.js';
 
 export const PING = 0.33;
 
+const cleanBpm = b => (typeof b === 'number' && Number.isFinite(b) && b > 0 ? b : 120);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /** Event timing view of a ResolvedChannel; pattern is that channel's boolean step row. */
@@ -36,21 +37,28 @@ export function evTimes(ev, t0, t1, rnd, tm) {
   }
   const regular = ev.mode === 'regular';
   const tv = regular ? ev.interval : ev.stepLen;
+  // Grid index k (event at k periods) belongs to the span with kLo <= k <= kHi, where both bounds use the
+  // same expression, so consecutive spans (t1 of one == t0 of the next) tile exactly: no index is dropped
+  // or emitted twice. Jitter is added after the index is chosen, so an event may land after t1; it is emitted
+  // by the span that owns its grid index.
+  const indices = (x0, x1, P) => {
+    const lo = Math.floor(x0 / P + 1e-9) + 1, hi = Math.floor(x1 / P + 1e-9), ks = [];
+    for (let k = lo; k <= hi; k++) ks.push(k);
+    return ks;
+  };
   const D = beatPeriod(tv);
   if (D !== null && tm && typeof tm.beatAt === 'function') {
-    const b0 = tm.beatAt(t0), b1 = tm.beatAt(t1), toSec = beat => t0 + (beat - b0) * 60 / tm.bpm;
-    if (regular) {
-      for (let k = Math.floor(b0 / D + 1e-9) + 1; k * D <= b1; k++) out.push(toSec(k * D + rnd() * ev.jitter * D));
-    } else {
-      for (let m = Math.floor(b0 / D + 1e-9) + 1; m * D <= b1; m++) if (ev.pattern[m % ev.steps]) out.push(toSec(m * D));
+    const b0 = tm.beatAt(t0), b1 = tm.beatAt(t1), secPerBeat = 60 / cleanBpm(bpm), toSec = beat => t0 + (beat - b0) * secPerBeat;
+    for (const k of indices(b0, b1, D)) {
+      if (regular) out.push(toSec(k * D + rnd() * ev.jitter * D));
+      else if (ev.pattern[k % ev.steps]) out.push(toSec(k * D));
     }
     return out;
   }
   const I = timeValuePeriodSec(tv, bpm);
-  if (regular) {
-    for (let k = Math.floor(t0 / I + 1e-9) + 1; k * I <= t1; k++) out.push(k * I + rnd() * ev.jitter * I);
-  } else {
-    for (let m = Math.floor(t0 / I + 1e-9) + 1; m * I <= t1; m++) if (ev.pattern[m % ev.steps]) out.push(m * I);
+  for (const k of indices(t0, t1, I)) {
+    if (regular) out.push(k * I + rnd() * ev.jitter * I);
+    else if (ev.pattern[k % ev.steps]) out.push(k * I);
   }
   return out;
 }
