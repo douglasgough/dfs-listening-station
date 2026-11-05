@@ -7,13 +7,16 @@
  * ControlFrame = {
  *   t,                                  frame timestamp (span time)
  *   balance, match,
- *   bandF:Float32Array(30), bandA:Float32Array(30)   MAXB bands x 3 sister oscillators [f, f+det, f-1.5det]
+ *   bandF:Float64Array(30), bandA:Float32Array(30)   MAXB bands x 3 sister oscillators [f, f+det, f-1.5det]
  *   bandPan:Float32Array(10)                          per band
- *   combF:Float32Array(64), combA:Float32Array(64)
- *   noiseF:Float32Array(20), noiseA:Float32Array(20)  band-pass centres (not snapped, not quantised)
- *   anchorF:Float32Array(2), anchorA:Float32Array(2)  2*f0 and 4*f0, not windowed
+ *   combF:Float64Array(64), combA:Float32Array(64)
+ *   noiseF:Float64Array(20), noiseA:Float32Array(20)  band-pass centres (not snapped, not quantised)
+ *   anchorF:Float64Array(2), anchorA:Float32Array(2)  2*f0 and 4*f0, not windowed
  *   events: EventSpec[]                               empty here; the score builder fills it
  * }
+ * Frequencies are Float64Array (ruling R28): with loopSec, quant() gives each partial a whole number
+ * of cycles per loop, and float32 storage would undo that for non-dyadic loop lengths (a phase step
+ * at the loop seam). Amplitudes and pans are Float32Array.
  * Amplitudes already include the channel's window gain (window, vertical gate or grains).
  *
  * Synth contract: the synth multiplies drone output (bands, comb, noise, anchor) by
@@ -33,7 +36,11 @@ export const BAND_AMP = 0.16;
 export const COMB_AMP = 0.05;
 export const NOISE_AMP = 0.05;
 export const ANCHOR_AMP = 0.14;
-/** Master output scale, applied by the mixer (exported for it). */
+/*
+ * MAXB bands (3 oscillators each), COMB comb partials and NK noise bands give the array lengths above.
+ * *_AMP are the per-layer amplitude scales folded into the frame amplitudes.
+ */
+/** Master output scale, applied by the mixer (exported for it), never by buildFrame. */
 export const MASTER = 2.0;
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -42,10 +49,10 @@ const fin = (x) => (Number.isFinite(x) ? x : 0);
 function emptyFrame(t, balance) {
   return {
     t, balance, match: 1,
-    bandF: new Float32Array(3 * MAXB), bandA: new Float32Array(3 * MAXB), bandPan: new Float32Array(MAXB),
-    combF: new Float32Array(COMB), combA: new Float32Array(COMB),
-    noiseF: new Float32Array(NK), noiseA: new Float32Array(NK),
-    anchorF: new Float32Array(2), anchorA: new Float32Array(2),
+    bandF: new Float64Array(3 * MAXB), bandA: new Float32Array(3 * MAXB), bandPan: new Float32Array(MAXB),
+    combF: new Float64Array(COMB), combA: new Float32Array(COMB),
+    noiseF: new Float64Array(NK), noiseA: new Float32Array(NK),
+    anchorF: new Float64Array(2), anchorA: new Float32Array(2),
     events: [],
   };
 }
@@ -68,7 +75,10 @@ export function buildFrame(ch, analysis, opts) {
   const granular = ch['filter.type'] === 'granular';
   const grains = granular ? grainsAt(ch, seed, sec, loopSec) : undefined;
   const w = (u) => channelGain(u, ch, analysis, grains);
-  fr.match = granular ? fin(loudnessMatch(ch, seed)) : 1;
+  if (granular) {
+    const m = loudnessMatch(ch, seed);
+    fr.match = Number.isFinite(m) ? m : 1;
+  }
   const map = channelMapping(ch);
   const bands = analysis.bands || [];
 

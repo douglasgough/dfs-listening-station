@@ -17,10 +17,12 @@ const A = analyse(allende, allende.axis, { polarity: 'dips', sens: 0.2, mode: 'h
 const ch1 = (over = {}) => ({ ...channelView(createState().params, 0), ...over });
 const opts = (over = {}) => ({ t: 0, seed: 101, ...over });
 
-// Float32 storage: compare with a relative tolerance.
+// Amplitudes are Float32 (and frequencies computed in a different order): compare with a relative tolerance.
 const close = (a, b, msg) => assert.ok(Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(b)), `${msg || ''} ${a} vs ${b}`);
 
 const ARRAYS = { bandF: 30, bandA: 30, bandPan: 10, combF: 64, combA: 64, noiseF: 20, noiseA: 20, anchorF: 2, anchorA: 2 };
+// R28: frequencies are Float64 (whole cycles per loop survive storage), amplitudes and pans Float32.
+const F64 = new Set(['bandF', 'combF', 'noiseF', 'anchorF']);
 
 // ---- independent reference formulas (prototype update(), lines 894-942) ----
 function hWin(u, c, w, s) {
@@ -49,7 +51,7 @@ test('frame shape: Float32Arrays of the right length, empty events, t passthroug
   assert.equal(fr.t, 3.5);
   assert.deepEqual(fr.events, []);
   for (const [k, n] of Object.entries(ARRAYS)) {
-    assert.ok(fr[k] instanceof Float32Array, k);
+    assert.ok(fr[k] instanceof (F64.has(k) ? Float64Array : Float32Array), k);
     assert.equal(fr[k].length, n, k);
   }
 });
@@ -155,10 +157,14 @@ test('(RF1) no bands and a flat profile: every element finite, bandA all zero', 
   }
 });
 
-test('loopSec 8: every non-noise frequency x 8 is an integer', () => {
-  const fr = buildFrame(ch1({ 'map.snap': 0.37, 'map.f0': 31.3 }), A, opts({ loopSec: 8 }));
-  for (const k of ['bandF', 'combF', 'anchorF']) for (const f of fr[k]) {
-    assert.ok(Math.abs(f * 8 - Math.round(f * 8)) < 1e-9, `${k} ${f}`);
+test('loopSec: every quantised frequency (band, comb, anchor) has whole cycles per loop, also non-dyadic L', () => {
+  for (const L of [8, 12, 48, 60, 7.3]) {
+    for (const over of [{ 'map.snap': 0.37, 'map.f0': 31.3 }, { 'filter.width': 1 }, { 'map.hi': 9000, 'map.snap': 0 }]) {
+      const fr = buildFrame(ch1(over), A, opts({ loopSec: L }));
+      for (const k of ['bandF', 'combF', 'anchorF']) fr[k].forEach((f, i) => {
+        assert.ok(Math.abs(f * L - Math.round(f * L)) < 1e-9, `L=${L} ${k}[${i}] ${f} ${JSON.stringify(over)}`);
+      });
+    }
   }
   // without loopSec the same channel has off-grid frequencies
   const free = buildFrame(ch1({ 'map.snap': 0.37, 'map.f0': 31.3 }), A, opts());
@@ -188,6 +194,24 @@ test('non-granular match is 1; balance passthrough', () => {
   const fr = buildFrame(ch1({ 'strip.balance': 0.85 }), A, opts());
   assert.equal(fr.match, 1);
   assert.equal(fr.balance, 0.85);
+});
+
+test('vertical window (reflectance gate) scales band amplitudes by the independently computed gate', () => {
+  const base = ch1({ 'filter.width': 1 }), gated = ch1({ 'filter.width': 1, 'vwin.mode': 1, 'vwin.center': 0.5, 'vwin.height': 0.3 });
+  const f0 = buildFrame(base, A, opts()), f1 = buildFrame(gated, A, opts());
+  let lowered = 0;
+  A.bands.forEach((b, i) => {
+    // documented gate: mode 1 windows the reflectance value at u with (center, height, soft)
+    const gate = hWin(interp(A.r, b.u), 0.5, 0.3, gated['vwin.soft']);
+    close(f1.bandA[3 * i], f0.bandA[3 * i] * gate, `band ${i}`);
+    close(f1.bandA[3 * i], refBandA(gated, b, gate), `band ${i} ref`);
+    if (gate < 1) { assert.ok(f1.bandA[3 * i] < f0.bandA[3 * i], `band ${i} is attenuated`); lowered++; }
+  });
+  assert.ok(lowered >= 1);
+  // Allende: band 0 (r ~ 0.45) sits inside the gate, bands 2-3 (r ~ 0.78, 0.89) are outside it
+  close(f1.bandA[0], f0.bandA[0]);
+  assert.equal(f1.bandA[6], 0); assert.equal(f1.bandA[9], 0);
+  assert.ok(f0.bandA[6] > 0 && f0.bandA[9] > 0);
 });
 
 test('filter.level 0: band/comb/noise amplitudes zero, anchor still sounds', () => {

@@ -317,3 +317,35 @@ test('timeMap: after setBpm a new map reflects it, the old one is unchanged', ()
   assert.equal(old.beatAt(3), oldNext);
   assert.equal(oldNext, 6);
 });
+
+test('timeMap: an earlier nowSec gives beat/sec at the latest-seen time, beatAt/secAt anchored at nowSec (documented)', () => {
+  const tr = new Transport({ bpm: 120 });
+  tr.start(0);
+  timeMap(tr, 10);                 // latest seen time is now 10
+  const m = timeMap(tr, 4);        // violates the non-decreasing precondition
+  assert.equal(m.nowSec, 4);
+  assert.equal(m.beat, 20);        // beat at t=10, not t=4
+  assert.equal(m.sec, 10);
+  assert.equal(m.beatAt(4), 20);   // anchored at nowSec = 4
+  assert.equal(m.beatAt(5), 22);
+  assert.equal(m.secAt(6), 12);
+});
+
+test('timeMap: a non-finite nowSec anchors at the latest-seen time and stays finite', () => {
+  for (const bad of [NaN, Infinity, -Infinity, undefined]) {
+    const tr = new Transport({ bpm: 120 });
+    tr.start(1);
+    tr.beatAt(3);                  // latest seen time 3, beat 4
+    const m = timeMap(tr, bad);
+    assert.equal(m.nowSec, 3, String(bad));
+    assert.equal(m.beat, 4);
+    assert.equal(m.sec, 2);
+    assert.equal(m.beatAt(3), 4);
+    assert.equal(m.beatAt(4), 6);
+    assert.equal(m.secAt(5), 4);
+    assert.ok(Number.isFinite(m.beatAt(0)) && Number.isFinite(m.secAt(100)));
+  }
+  const stopped = timeMap(new Transport(), NaN);
+  assert.equal(stopped.nowSec, 0);
+  assert.equal(stopped.beatAt(7), 0);
+});
