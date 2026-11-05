@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectrum Listening Station</title>
+</head>
+<body>
+<script>
+  // Classic script (not a module): ES modules and AudioWorklets cannot load from file://, so say so
+  // instead of failing silently.
+  if (location.protocol === 'file:') {
+    document.body.innerHTML = '';
+    var p = document.createElement('p');
+    p.id = 'file-protocol-message';
+    p.textContent = 'Serve this app over HTTP(S) (the audio engine cannot load from a file)';
+    document.body.appendChild(p);
+  }
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
