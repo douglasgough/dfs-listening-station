@@ -203,3 +203,35 @@ test('every modulatable id is a valid route destination', () => {
   const st = createStore(createState());
   for (const id of modulatableIds()) st.addRoute({ src: 'g.lfo2', dst: id, amount: 0.1 });
 });
+
+test('route changes notify subscribers once with (matrix, copy of matrix)', () => {
+  const st = createStore(createState());
+  const calls = [];
+  st.subscribe((id, v) => calls.push([id, v]));
+  st.addRoute({ src: 'g.lfo1', dst: 'ch1.filter.center', amount: 0.5 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'matrix');
+  assert.deepEqual(calls[0][1], st.state.matrix);
+  assert.notEqual(calls[0][1], st.state.matrix);
+  // replace amount
+  st.addRoute({ src: 'g.lfo1', dst: 'ch1.filter.center', amount: 0.25 });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1].find(r => r.src === 'g.lfo1').amount, 0.25);
+  // unchanged amount: no notify
+  st.addRoute({ src: 'g.lfo1', dst: 'ch1.filter.center', amount: 0.25 });
+  assert.equal(calls.length, 2);
+  // invalid add: throws, no notify
+  assert.throws(() => st.addRoute({ src: 'g.bogus', dst: 'ch1.filter.center', amount: 1 }));
+  assert.equal(calls.length, 2);
+  // no-op remove
+  st.removeRoute('g.lfo2', 'ch1.filter.center');
+  assert.equal(calls.length, 2);
+  // real remove
+  st.removeRoute('g.lfo1', 'ch1.filter.center');
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2][0], 'matrix');
+  assert.ok(!calls[2][1].some(r => r.src === 'g.lfo1'));
+  // the copy passed to subscribers is detached from state
+  calls[2][1].length = 0;
+  assert.equal(st.state.matrix.length, 4);
+});

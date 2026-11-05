@@ -101,10 +101,14 @@ function routeProblem(r) {
   return null;
 }
 
+/** Insert or replace a route (clamping amount). Returns true if the list changed. */
 function putRoute(matrix, r) {
   const route = { src: r.src, dst: r.dst, amount: clamp(r.amount, -1, 1) };
   const i = matrix.findIndex(m => m.src === route.src && m.dst === route.dst);
-  if (i >= 0) matrix[i] = route; else matrix.push(route);
+  if (i < 0) { matrix.push(route); return true; }
+  if (matrix[i].amount === route.amount) return false;
+  matrix[i] = route;
+  return true;
 }
 
 // ---- store ---------------------------------------------------------------------------------
@@ -116,6 +120,7 @@ export function createStore(state) {
     if (!def) throw new Error(`Unknown parameter id: ${id}`);
     return def;
   };
+  const notify = (id, value) => { for (const fn of [...subs]) fn(id, value); };
   return {
     state,
     get(id) {
@@ -125,7 +130,7 @@ export function createStore(state) {
     set(id, v) {
       const value = normalize(id, defOf(id), v);
       state.params[id] = value;
-      for (const fn of [...subs]) fn(id, value);
+      notify(id, value);
     },
     subscribe(fn) {
       subs.add(fn);
@@ -134,10 +139,13 @@ export function createStore(state) {
     addRoute(r) {
       const problem = routeProblem(r);
       if (problem) throw new Error(problem);
-      putRoute(state.matrix, r);
+      if (putRoute(state.matrix, r)) notify('matrix', clone(state.matrix));
     },
     removeRoute(src, dst) {
-      state.matrix = state.matrix.filter(m => !(m.src === src && m.dst === dst));
+      const next = state.matrix.filter(m => !(m.src === src && m.dst === dst));
+      if (next.length === state.matrix.length) return;
+      state.matrix = next;
+      notify('matrix', clone(next));
     },
   };
 }
