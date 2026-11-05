@@ -513,3 +513,67 @@ test('a 100k-row line list parses in well under 2 s', () => {
   assert.equal(layer.lines.length, 100000);
   assert.ok(dt < 2000, `took ${dt} ms`); // generous bound: typically well under 500 ms
 });
+
+// ---- Fix round 2: commented-header guards ----
+test('prose comment mentioning wavelength/intensity is a plain comment (real header follows)', () => {
+  for (const prose of ['# Wavelength and intensity measured at the lab', '// wavelength and intensity in nm',
+    '% Wavelength, intensity and stuff', '; wavelength intensity measured here']) {
+    const a = parseLineList(`${prose}\nwavelength,intensity\n500,1\n600,2`, 'p');
+    assert.deepEqual(a.layer.lines.map(l => l.x), [500, 600], prose);
+    assert.equal(a.skipped.count, 0);
+    const b = parseLineList(`${prose}\nwavelength,intensity,label\n500,1,A\n600,2,B`, 'p');
+    assert.deepEqual(b.layer.lines.map(l => l.label), ['A', 'B'], prose);
+    assert.equal(parseAny(`${prose}\nwavelength,intensity,label\n500,1,A\n600,2,B`, 'p').layer.kind, 'lines');
+  }
+  // unit from the real header survives
+  const u = parseLineList('// wavelength and intensity in nm\nWavelength [µm],intensity\n5,1\n6,2', 'p');
+  assert.equal(u.layer.axis.unit, 'µm');
+  // sampled through parseAny: real header, flux quantity
+  const s = parseAny('# wavelength and flux of the sample\nwavelength,flux\n' + uniform(20).map(x => `${x},0.5`).join('\n'), 'p');
+  assert.equal(s.layer.kind, 'sampled');
+  assert.equal(s.layer.quantity, 'flux');
+  assert.equal(s.layer.x.length, 20);
+});
+
+test('a commented header followed by a real header: the real header wins', () => {
+  const txt = '# wavelength,intensity\nwavelength_nm,intensity,label\n500,1,A\n600,2,B';
+  const { layer } = parseLineList(txt, 'p');
+  assert.equal(layer.lines.length, 2);
+  assert.equal(layer.lines[0].label, 'A');
+  assert.equal(layer.axis.unit, 'nm');
+});
+
+test('genuine commented headers still work: every cell must be a column name (+ unit annotation)', () => {
+  const cases = [
+    ['# ', 'wavelength,intensity,width', ','], ['// ', 'wavelength,intensity,width', ','],
+    ['% ', 'wavelength\tintensity\twidth', '\t'], ['; ', 'wavelength,intensity,width', ','],
+    ['# ', 'wavelength intensity width', ' '], ['// ', 'wavelength_nm intensity width', ' '],
+    ['# ', 'Wavelength [µm], Intensity, FWHM', ','], ['# ', 'wavenumber cm⁻¹ intensity width', ' '],
+    ['# ', 'wavelength (nm);intensity;width', ';'],
+  ];
+  for (const [mark, row, sep] of cases) {
+    const txt = `${mark}${row}\n500${sep}1${sep}0.5\n600${sep}2${sep}0.6\n`;
+    const { layer } = parseLineList(txt, 'c');
+    assert.equal(layer.lines.length, 2, JSON.stringify(mark + row));
+    assert.equal(layer.lines[0].width, 0.5, JSON.stringify(mark + row));
+  }
+  assert.equal(parseLineList('# wavelength_nm intensity\n500 1', 'c').layer.axis.unit, 'nm');
+  assert.equal(parseLineList('# wavenumber cm⁻¹ intensity\n2000 1', 'c').layer.axis.unit, 'cm⁻¹');
+  // cells that are not column names are rejected
+  assert.throws(() => parseLineList('# wavelength,intensity,notes\n500,1,x', 'c'), /header/i);
+  assert.throws(() => parseLineList('# wavelength and intensity\n500 1', 'c'), /header/i);
+});
+
+test('headerless text starting with a bare "# wavelength intensity" comment is deliberately treated as headered', () => {
+  // < 64 uniform rows -> line list
+  const few = '# wavelength intensity\n' + uniform(10).map((x, i) => `${x} ${i + 1}`).join('\n');
+  const f = parseAny(few, 'h');
+  assert.equal(f.layer.kind, 'lines');
+  assert.equal(f.layer.lines.length, 10);
+  // 64+ uniform rows -> sampled with quantity 'flux'
+  const many = '# wavelength intensity\n' + uniform(80).map((x, i) => `${x} ${i + 1}`).join('\n');
+  const m = parseAny(many, 'h');
+  assert.equal(m.layer.kind, 'sampled');
+  assert.equal(m.layer.quantity, 'flux');
+  assert.equal(m.layer.x.length, 80);
+});

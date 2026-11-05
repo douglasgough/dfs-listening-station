@@ -55,12 +55,47 @@ const toNum = cell => {
 };
 const isNumericCell = cell => Number.isFinite(toNum(cell));
 
+// Unit/annotation words allowed after a column name in a commented header (`wavelength_nm`, `[µm]`, `cm⁻¹`).
+const UNIT_WORDS = new Set(['nm', 'um', 'µm', 'μm', 'micron', 'microns', 'micrometer', 'micrometers', 'micrometre', 'micrometres',
+  'nanometer', 'nanometers', 'nanometre', 'nanometres', 'å', 'angstrom', 'angstroms', 'ang', 'cm', 'hz', 'ghz', '1', '¹']);
+const isColumnCell = cell => {
+  const toks = headerTokens(cell);
+  return toks.length > 0 && CATEGORIES.some(([, words]) => words.has(toks[0])) && toks.slice(1).every(t => UNIT_WORDS.has(t));
+};
+/** splitCells for a header row: with whitespace delimiting, bare unit tokens (`cm⁻¹`, `[µm]`) join the preceding name. */
+function splitHeaderCells(line, delim) {
+  const cells = splitCells(line, delim);
+  if (delim !== null) return cells;
+  const out = [];
+  for (const c of cells) {
+    if (out.length && isUnitCell(c) && !isColumnCell(c)) out[out.length - 1] += ' ' + c; else out.push(c);
+  }
+  return out;
+}
+const isUnitCell = cell => { const toks = headerTokens(cell); return toks.length > 0 && toks.every(t => UNIT_WORDS.has(t)); };
+
+/**
+ * True when a comment's text (marker already stripped) is a header and not prose: with a comma/tab/semicolon, EVERY
+ * cell is a recognised column name optionally followed by a unit annotation; otherwise (whitespace-separated) EVERY
+ * token is a column name or a bare unit token. It must also name a position-like and an intensity-like column.
+ * `# wavelength_nm intensity width` qualifies; `# Wavelength and intensity measured at the lab` does not.
+ */
+function isHeaderLikeText(text) {
+  const delim = detectDelimiter(text);
+  const cells = splitHeaderCells(text, delim);
+  const ok = cells.every(isColumnCell);
+  if (!ok) return false;
+  const { cols } = headerColumns(cells);
+  return cols.position !== undefined && cols.intensity !== undefined;
+}
+
 /**
  * Non-blank lines with their 1-based line numbers in the original text.
  * Comment markers (`#`, `//`, `;`, `%`) are honoured only BEFORE the header (the first content line); after it every
  * non-blank line is data, so a row like `;2;B` is a row with an empty position rather than a vanished comment.
- * Exception: if the very first non-blank line is a comment whose text (marker stripped) names a position-like and an
- * intensity-like column (`# wavelength,intensity,width`), it is used as the header.
+ * Exception: if the very first non-blank line is a comment that isHeaderLikeText (`# wavelength,intensity,width`) AND
+ * the next non-blank, non-comment line is not itself a real (non-numeric first cell) header, it is used as the header.
+ * Deliberate consequence: headerless data under a bare `# wavelength intensity` comment is treated as headered.
  */
 function contentLines(text) {
   const out = [];
@@ -74,8 +109,7 @@ function contentLines(text) {
       if (m) {
         if (firstNonBlank) {
           const stripped = t.slice(m.length).trim();
-          const { cols } = headerColumns(splitCells(stripped, detectDelimiter(stripped)));
-          if (cols.position !== undefined && cols.intensity !== undefined) { out.push({ n: i + 1, t: stripped }); started = true; }
+          if (isHeaderLikeText(stripped) && !nextLineIsRealHeader(lines, i + 1)) { out.push({ n: i + 1, t: stripped }); started = true; }
         }
         firstNonBlank = false;
         continue;
@@ -86,6 +120,17 @@ function contentLines(text) {
     out.push({ n: i + 1, t });
   }
   return out;
+}
+
+/** Is the next non-blank, non-comment line from `from` on a header (non-empty, non-numeric first cell)? */
+function nextLineIsRealHeader(lines, from) {
+  for (let j = from; j < lines.length; j++) {
+    const t = lines[j].trim();
+    if (!t || commentMarker(t)) continue;
+    const first = splitCells(t, detectDelimiter(t))[0];
+    return first !== '' && !isNumericCell(first);
+  }
+  return false;
 }
 
 /** Tab, semicolon or comma (most frequent wins; ties prefer tab, then semicolon); else runs of whitespace. */
@@ -173,7 +218,7 @@ export function parseLineList(text, name, opts = {}) {
   const content = contentLines(text);
   if (!content.length) throw new Error('No data rows');
   const delim = detectDelimiter(content[0].t);
-  const head = splitCells(content[0].t, delim);
+  const head = splitHeaderCells(content[0].t, delim);
   const { cols } = headerColumns(head);
   if (cols.position === undefined || cols.intensity === undefined) {
     throw new Error('A line list needs a header row naming a position column (wavelength, position, ...) and an intensity column.');
@@ -230,7 +275,7 @@ export function parseCsvSampled(text, name, opts = {}) {
   const content = contentLines(text);
   if (!content.length) throw new Error('Found only 0 numeric rows. Expected two columns: position, value.');
   const delim = detectDelimiter(content[0].t);
-  const first = splitCells(content[0].t, delim);
+  const first = splitHeaderCells(content[0].t, delim);
   const hasHeader = !isNumericCell(first[0]);
   const head = hasHeader ? first : null;
   const body = hasHeader ? content.slice(1) : content;
@@ -263,7 +308,7 @@ function peekHeader(text) {
   const first = content[0];
   if (!first) return null;
   const delim = detectDelimiter(first.t);
-  const cells = splitCells(first.t, delim);
+  const cells = splitHeaderCells(first.t, delim);
   if (cells.length < 2 || isNumericCell(cells[0])) return null;
   return { cells, content, delim, ...headerColumns(cells) };
 }
