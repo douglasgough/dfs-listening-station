@@ -192,7 +192,7 @@ body { padding-bottom: calc(var(--dockH, 0px) + 28px); }
 .cols .mod, .cols .mod:first-child { border-top: 1px solid var(--line); padding-top: 14px; }
 .fbody select, .fbody input[type=number] { background: var(--bg); }
 /* timeline */
-#tlc { display: block; width: 100%; height: clamp(150px, 24vh, 240px); border: 1px solid var(--line); border-radius: 4px; background: var(--panel); touch-action: none; cursor: crosshair; }
+#tlc, .tlcanvas { display: block; width: 100%; height: clamp(150px, 24vh, 240px); border: 1px solid var(--line); border-radius: 4px; background: var(--panel); touch-action: none; cursor: crosshair; }
 .row input[type=range]:disabled { opacity: 0.3; cursor: default; }
 .dropveil { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(14, 17, 24, 0.88); font-family: var(--display); font-style: italic; font-weight: 300; font-size: 2rem; z-index: 50; border: 2px dashed var(--accent); }
 .dropveil.on { display: flex; }
@@ -291,3 +291,7 @@ fieldset.maplink:disabled { opacity: 0.55; }
 .srcmsg { color: var(--rec); font-size: 12px; min-height: 0; }
 .srcmsg:empty { display: none; }
 .subsec .srchead b { display: none; }
+
+/* timeline editor (Task 18b) */
+.tleditor { display: flex; flex-direction: column; gap: 8px; }
+.tleditor .tlevent { display: flex; flex-direction: column; gap: 4px; }

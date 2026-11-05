@@ -76,7 +76,7 @@ const ENUM_LABELS = { 'vwin.mode': { 0: 'Off', 1: 'Reflectance', 2: 'Depth' } };
 
 // ---- DOM ----------------------------------------------------------------------------------------
 
-function el(tag, props = {}, ...kids) {
+export function el(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
     if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k === 'tip') { if (v != null && v !== '') e.dataset.tip = v; } else e.setAttribute(k, v);

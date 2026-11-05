@@ -3,12 +3,13 @@
 // message (and Chrome refuses module loads from file:// anyway): do no work there.
 if (typeof location === 'undefined' || location.protocol !== 'file:') {
   try {
-  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { createChannelPanel }, { EXAMPLE_LAYERS }] = await Promise.all([
+  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { createChannelPanel }, { createTimelineEditor }, { EXAMPLE_LAYERS }] = await Promise.all([
     import('./core/state.js'),
     import('./ui/app-state.js'),
     import('./ui/layer-panel.js'),
     import('./ui/stage.js'),
     import('./ui/channel-panel.js'),
+    import('./ui/timeline.js'),
     import('./spectrum/examples.js'),
   ]);
 
@@ -16,7 +17,10 @@ if (typeof location === 'undefined' || location.protocol !== 'file:') {
   const app = createAppState({ store, examples: EXAMPLE_LAYERS });
   const stage = createStage(document.getElementById('stage-host'), { store, app });
   const layerPanel = createLayerPanel(document.getElementById('layers'), app);
-  const panel = createChannelPanel(document.getElementById('channels'), { store, app });
+  const panel = createChannelPanel(document.getElementById('channels'), {
+    store, app,
+    mountTimeline: (slot, ch) => createTimelineEditor(slot, { store, app, channel: ch, getPlayhead: (...a) => window.__app && window.__app.getPlayhead ? window.__app.getPlayhead(...a) : null }),
+  });
 
   // tooltips (ported from the prototype)
   const tipEl = document.getElementById('tip');
