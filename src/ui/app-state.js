@@ -27,6 +27,8 @@ export function createAppState({ store, examples = [] } = {}) {
     zoomStack: [],
     selected: 0,
     version: 0,
+    /** UI-only: channel i's map.* follows channel 1's (never part of the patch). */
+    mapLinked: Array.from({ length: NUM_CHANNELS }, () => false),
   };
 
   const bump = () => { app.version++; for (const fn of [...subs]) fn(app); };
@@ -126,6 +128,14 @@ export function createAppState({ store, examples = [] } = {}) {
   app.select = i => {
     if (!Number.isInteger(i) || i < 0 || i >= NUM_CHANNELS || i === app.selected) return;
     app.selected = i;
+    bump();
+  };
+
+  app.setMapLinked = (i, on) => {
+    if (!Number.isInteger(i) || i < 1 || i >= NUM_CHANNELS) throw new Error(`Channel ${i} cannot be linked to channel 1`);
+    const v = Boolean(on);
+    if (app.mapLinked[i] === v) return;
+    app.mapLinked[i] = v;
     bump();
   };
 

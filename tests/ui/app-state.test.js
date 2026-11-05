@@ -168,3 +168,24 @@ test('removing a non-first layer leaves the stage alone; same-unit setUnit is a 
   assert.equal(app.zoomStack.length, 1);
   assert.ok(v2 > v);
 });
+
+test('mapLinked defaults false; setMapLinked toggles, notifies, rejects channel 1/out of range', () => {
+  const { app } = make();
+  assert.deepEqual(app.mapLinked, [false, false, false, false]);
+  let n = 0; app.subscribe(() => n++);
+  app.setMapLinked(1, true);
+  assert.deepEqual(app.mapLinked, [false, true, false, false]);
+  assert.equal(n, 1);
+  app.setMapLinked(1, true);
+  assert.equal(n, 1, 'no change, no notify');
+  app.setMapLinked(1, false);
+  assert.equal(app.mapLinked[1], false);
+  for (const i of [0, 4, -1, 1.5]) assert.throws(() => app.setMapLinked(i, true));
+});
+
+test('mapLinked is not part of the patch', async () => {
+  const { app, store } = make();
+  app.setMapLinked(2, true);
+  const { serializePatch } = await import('../../src/core/state.js');
+  assert.ok(!serializePatch(store.state).includes('mapLinked'));
+});

@@ -235,3 +235,96 @@ test('route changes notify subscribers once with (matrix, copy of matrix)', () =
   calls[2][1].length = 0;
   assert.equal(st.state.matrix.length, 4);
 });
+
+// ---- Task 18: non-param store setters ------------------------------------------------------
+
+const mk = () => { const store = createStore(createState()); const calls = []; store.subscribe((id, v) => calls.push([id, v])); return { store, calls }; };
+
+test('LFO_SHAPES is the modulation list (single source)', async () => {
+  const { LFO_SHAPES } = await import('../../src/core/state.js');
+  const mod = await import('../../src/core/modulation.js');
+  assert.equal(LFO_SHAPES, mod.LFO_SHAPES);
+  assert.deepEqual(LFO_SHAPES, ['sine', 'tri', 'ramp', 'square', 'steps', 'drift']);
+});
+
+test('setPatternStep writes and notifies once; rejects bad input', () => {
+  const { store, calls } = mk();
+  store.setPatternStep(2, 5, true);
+  assert.equal(store.state.pattern[2][5], true);
+  assert.deepEqual(calls, [['pattern', { ch: 2, i: 5, on: true }]]);
+  for (const [c, i, on] of [[4, 0, true], [-1, 0, true], [0, 16, true], [0, -1, true], [0, 1.5, true], [0, 0, 1], [0.5, 0, true]]) {
+    assert.throws(() => store.setPatternStep(c, i, on), c + ',' + i + ',' + on);
+  }
+  assert.equal(calls.length, 1);
+});
+
+test('setTimeline merges, clamps, sorts and notifies', () => {
+  const { store, calls } = mk();
+  store.setTimeline(1, { mode: 'jump', len: { mode: 'beats', div: '1/4' }, events: [{ t: 0.5, c: 2, w: -3, extra: 9 }, { t: 0.1, c: 0.3 }] });
+  const tl = store.state.timelines[1];
+  assert.equal(tl.mode, 'jump');
+  assert.deepEqual(tl.len, { mode: 'beats', div: '1/4' });
+  assert.deepEqual(tl.events, [{ t: 0.1, c: 0.3 }, { t: 0.5, c: 1, w: 0.02 }]);
+  assert.deepEqual(calls, [['timeline', { ch: 1 }]]);
+  store.setTimeline(1, { mode: 'morph' });
+  assert.equal(store.state.timelines[1].events.length, 2, 'partial patch keeps events');
+  assert.equal(calls.length, 2);
+});
+
+test('setTimeline rejects invalid input atomically', () => {
+  const { store, calls } = mk();
+  const before = JSON.stringify(store.state.timelines);
+  const bad = [
+    [4, {}], [0, null], [0, { mode: 'x' }], [0, { len: { mode: 'sec', value: 0 } }], [0, { len: { mode: 'beats', div: '9/9' } }],
+    [0, { events: {} }], [0, { events: [{ t: 1 }] }], [0, { events: [{ t: -0.1 }] }], [0, { events: [{ t: NaN }] }],
+    [0, { events: [{ t: 0.2, c: NaN }] }], [0, { mode: 'jump', events: [{ t: 0.2, c: 'a' }] }], [0, { events: [3] }],
+  ];
+  for (const [c, p] of bad) assert.throws(() => store.setTimeline(c, p), JSON.stringify(p));
+  assert.equal(JSON.stringify(store.state.timelines), before);
+  assert.equal(calls.length, 0);
+});
+
+test('setMod lfo: valid, clamp-free fields, notifies', () => {
+  const { store, calls } = mk();
+  store.setMod('ch3', 'lfo', 1, { shape: 'drift', rate: { mode: 'hz', value: 2 }, phase: 0.5, seed: 42 });
+  assert.deepEqual(store.state.mods.ch3.lfo[1], { shape: 'drift', rate: { mode: 'hz', value: 2 }, phase: 0.5, seed: 42 });
+  store.setMod('g', 'lfo', 0, { shape: 'steps' });
+  assert.deepEqual(calls, [['mods', { owner: 'ch3', kind: 'lfo', index: 1 }], ['mods', { owner: 'g', kind: 'lfo', index: 0 }]]);
+});
+
+test('setMod env clamps to ranges', () => {
+  const { store } = mk();
+  store.setMod('ch1', 'env', 0, { a: 0, h: 99, d: 0 });
+  assert.deepEqual(store.state.mods.ch1.env[0], { a: 0.002, h: 4, d: 0.05 });
+  store.setMod('ch1', 'env', 1, { a: 100, d: 100 });
+  assert.equal(store.state.mods.ch1.env[1].a, 3);
+  assert.equal(store.state.mods.ch1.env[1].d, 10);
+});
+
+test('setMod rejects invalid input without notifying', () => {
+  const { store, calls } = mk();
+  const bad = [
+    ['x', 'lfo', 0, {}], ['ch1', 'foo', 0, {}], ['ch1', 'lfo', 2, {}], ['ch1', 'lfo', -1, {}], ['g', 'env', 0, { a: 1 }],
+    ['ch1', 'lfo', 0, { shape: 'saw' }], ['ch1', 'lfo', 0, { rate: { mode: 'hz', value: -1 } }], ['ch1', 'lfo', 0, { rate: 3 }],
+    ['ch1', 'lfo', 0, { phase: 1 }], ['ch1', 'lfo', 0, { phase: NaN }], ['ch1', 'lfo', 0, { seed: 1.5 }], ['ch1', 'lfo', 0, { a: 1 }],
+    ['ch1', 'env', 0, { a: NaN }], ['ch1', 'env', 0, { shape: 'sine' }], ['ch1', 'env', 0, null], ['__proto__', 'lfo', 0, {}],
+  ];
+  for (const [o, k, i, p] of bad) assert.throws(() => store.setMod(o, k, i, p), `${o} ${k} ${i} ${JSON.stringify(p)}`);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(store.state.mods.ch1.lfo[0], createState().mods.ch1.lfo[0]);
+});
+
+test('a patch with an invalid field changes nothing (all-or-nothing)', () => {
+  const { store } = mk();
+  assert.throws(() => store.setMod('ch1', 'lfo', 0, { shape: 'ramp', phase: 5 }));
+  assert.equal(store.state.mods.ch1.lfo[0].shape, 'sine');
+});
+
+test('subscriberCount tracks subscribe/unsubscribe', () => {
+  const store = createStore(createState());
+  assert.equal(store.subscriberCount(), 0);
+  const off = store.subscribe(() => {});
+  assert.equal(store.subscriberCount(), 1);
+  off();
+  assert.equal(store.subscriberCount(), 0);
+});

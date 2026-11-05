@@ -15,6 +15,11 @@
  */
 
 import { NUM_CHANNELS, paramDef, allParamIds } from './schema.js';
+import { DIVISIONS } from './transport.js';
+import { LFO_SHAPES } from './modulation.js';
+import { TL_KEYS } from './timeline.js';
+
+export { LFO_SHAPES };
 
 export const PATCH_VERSION = 4;
 export const PATCH_APP = 'spectrum-listening-station';
@@ -23,7 +28,7 @@ export const PATTERN_STEPS = 16;
 const TIME_MODES = ['beats', 'hz', 'sec'];
 const TIMELINE_MODES = ['morph', 'jump'];
 const DEFAULT_PATTERN_ROW = [1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0].map(Boolean);
-const LFO_SHAPES = ['sine', 'tri'];
+const DEFAULT_LFO_SHAPES = ['sine', 'tri'];
 const SOURCE_RE = /^(g\.lfo[12]|g\.cc\d+|ch[1-4]\.(lfo|env)[12])$/;
 
 const owners = () => ['g', ...Array.from({ length: NUM_CHANNELS }, (_, i) => `ch${i + 1}`)];
@@ -32,7 +37,7 @@ const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 function defaultLfo(n, seedIndex) {
-  return { shape: LFO_SHAPES[n % LFO_SHAPES.length], rate: { mode: 'hz', value: 0.1 }, phase: 0, seed: 17 + 1000 * seedIndex };
+  return { shape: DEFAULT_LFO_SHAPES[n % DEFAULT_LFO_SHAPES.length], rate: { mode: 'hz', value: 0.1 }, phase: 0, seed: 17 + 1000 * seedIndex };
 }
 const defaultEnv = () => ({ a: 0.03, h: 0, d: 1.2 });
 
@@ -111,6 +116,42 @@ function putRoute(matrix, r) {
   return true;
 }
 
+/** Strict TimeValue check for UI writes: synced needs a known division, free needs a positive finite value. */
+function strictTime(v, what) {
+  if (!isObj(v)) throw new Error(`${what}: expected a time value`);
+  if (v.mode === 'beats') {
+    if (!Object.hasOwn(DIVISIONS, v.div)) throw new Error(`${what}: unknown division ${String(v.div)}`);
+    return { mode: 'beats', div: v.div };
+  }
+  if (v.mode === 'hz' || v.mode === 'sec') {
+    if (typeof v.value !== 'number' || !Number.isFinite(v.value) || v.value <= 0) throw new Error(`${what}: value must be a positive number`);
+    return { mode: v.mode, value: v.value };
+  }
+  throw new Error(`${what}: mode must be beats, hz or sec`);
+}
+
+const chIndex = ch => {
+  if (!Number.isInteger(ch) || ch < 0 || ch >= NUM_CHANNELS) throw new Error(`Channel index out of range: ${String(ch)}`);
+  return ch;
+};
+const finiteNum = (v, what) => {
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`${what}: expected a finite number, got ${String(v)}`);
+  return v;
+};
+const ENV_RANGES = { a: [0.002, 3], h: [0, 4], d: [0.05, 10] };
+const TL_RANGES = Object.fromEntries(TL_KEYS.map(([k, pk]) => { const d = paramDef(`ch1.${pk}`); return [k, [d.min, d.max]]; }));
+
+function cleanTimelineEvent(e, i) {
+  if (!isObj(e)) throw new Error(`timeline event ${i}: expected an object`);
+  if (typeof e.t !== 'number' || !Number.isFinite(e.t) || e.t < 0 || e.t >= 1) throw new Error(`timeline event ${i}: t must be in [0, 1)`);
+  const out = { t: e.t };
+  for (const [k, [lo, hi]] of Object.entries(TL_RANGES)) {
+    if (e[k] === undefined) continue;
+    out[k] = clamp(finiteNum(e[k], `timeline event ${i}.${k}`), lo, hi);
+  }
+  return out;
+}
+
 // ---- store ---------------------------------------------------------------------------------
 
 export function createStore(state) {
@@ -140,6 +181,56 @@ export function createStore(state) {
       const problem = routeProblem(r);
       if (problem) throw new Error(problem);
       if (putRoute(state.matrix, r)) notify('matrix', clone(state.matrix));
+    },
+    /** Test/diagnostic helper: number of live subscribers (used to check that UI teardown does not leak). */
+    subscriberCount() { return subs.size; },
+    /** Toggle one pattern step. Throws on a bad channel/step/flag. Notifies ('pattern', {ch, i, on}). */
+    setPatternStep(ch, i, on) {
+      chIndex(ch);
+      if (!Number.isInteger(i) || i < 0 || i >= PATTERN_STEPS) throw new Error(`Pattern step out of range: ${String(i)}`);
+      if (typeof on !== 'boolean') throw new Error('Pattern step value must be a boolean');
+      state.pattern[ch][i] = on;
+      notify('pattern', { ch, i, on });
+    },
+    /** Merge a validated patch into state.timelines[ch]. All-or-nothing. Notifies ('timeline', {ch}). */
+    setTimeline(ch, patch) {
+      chIndex(ch);
+      if (!isObj(patch)) throw new Error('Timeline patch must be an object');
+      const next = {};
+      if ('len' in patch) next.len = strictTime(patch.len, 'timeline len');
+      if ('mode' in patch) {
+        if (!TIMELINE_MODES.includes(patch.mode)) throw new Error(`timeline mode must be one of ${TIMELINE_MODES.join(', ')}`);
+        next.mode = patch.mode;
+      }
+      if ('events' in patch) {
+        if (!Array.isArray(patch.events)) throw new Error('timeline events must be an array');
+        next.events = patch.events.map(cleanTimelineEvent).sort((a, b) => a.t - b.t);
+      }
+      Object.assign(state.timelines[ch], next);
+      notify('timeline', { ch });
+    },
+    /** Merge a validated patch into one LFO/envelope. owner 'g'|'ch1'..'ch4'. Notifies ('mods', {owner, kind, index}). */
+    setMod(owner, kind, index, patch) {
+      const m = state.mods[owner];
+      if (!Object.hasOwn(state.mods, owner)) throw new Error(`Unknown mod owner: ${String(owner)}`);
+      if (kind !== 'lfo' && kind !== 'env') throw new Error(`Unknown mod kind: ${String(kind)}`);
+      const list = m[kind];
+      if (!Number.isInteger(index) || index < 0 || index >= list.length) throw new Error(`${owner}.${kind}: index out of range: ${String(index)}`);
+      if (!isObj(patch)) throw new Error('Mod patch must be an object');
+      const next = {};
+      for (const [k, v] of Object.entries(patch)) {
+        if (kind === 'lfo') {
+          if (k === 'shape') { if (!LFO_SHAPES.includes(v)) throw new Error(`lfo shape must be one of ${LFO_SHAPES.join(', ')}`); next.shape = v; }
+          else if (k === 'rate') next.rate = strictTime(v, 'lfo rate');
+          else if (k === 'phase') { finiteNum(v, 'lfo phase'); if (v < 0 || v >= 1) throw new Error('lfo phase must be in [0, 1)'); next.phase = v; }
+          else if (k === 'seed') { if (!Number.isInteger(v)) throw new Error('lfo seed must be an integer'); next.seed = v; }
+          else throw new Error(`Unknown lfo field: ${k}`);
+        } else if (Object.hasOwn(ENV_RANGES, k)) {
+          next[k] = clamp(finiteNum(v, `env ${k}`), ...ENV_RANGES[k]);
+        } else throw new Error(`Unknown env field: ${k}`);
+      }
+      Object.assign(list[index], next);
+      notify('mods', { owner, kind, index });
     },
     removeRoute(src, dst) {
       const next = state.matrix.filter(m => !(m.src === src && m.dst === dst));

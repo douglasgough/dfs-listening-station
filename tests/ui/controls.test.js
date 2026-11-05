@@ -82,3 +82,21 @@ test('onParams filters ids (array, Set, predicate) and unsubscribes', () => {
   store.set('ch1.filter.center', 0.9);
   assert.equal(seen.length, 3);
 });
+
+test('onParams ignores the non-param notifications (pattern, timeline, mods, matrix)', () => {
+  const store = createStore(createState());
+  const seen = [];
+  onParams(store, ['ch1.filter.center'], (id) => seen.push(id));
+  store.setPatternStep(0, 1, true);
+  store.setTimeline(0, { mode: 'jump' });
+  store.setMod('ch1', 'env', 0, { a: 0.5 });
+  store.addRoute({ src: 'ch1.lfo1', dst: 'ch1.filter.center', amount: 0.2 });
+  assert.deepEqual(seen, []);
+  store.set('ch1.filter.center', 0.4);
+  assert.deepEqual(seen, ['ch1.filter.center']);
+});
+
+test('the stage watch pattern does not match non-param notification ids', () => {
+  const WATCH = /^ch[1-4]\.(filter|vwin|map|source|grain)\./;
+  for (const id of ['pattern', 'timeline', 'mods', 'matrix']) assert.equal(WATCH.test(id), false);
+});
