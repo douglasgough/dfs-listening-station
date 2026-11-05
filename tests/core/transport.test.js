@@ -91,12 +91,77 @@ test('setBpm without nowSec uses the last known time', () => {
   assert.equal(t.beatAt(4), 6);
 });
 
-test('setBpm clamps to [20,300]', () => {
+test('setBpm clamps any finite number (and +-Infinity) to [20,300]; NaN/non-number falls back to 120', () => {
   const t = new Transport();
-  t.setBpm(1);
-  assert.equal(t.bpm, 20);
-  t.setBpm(1000);
-  assert.equal(t.bpm, 300);
+  for (const [inp, out] of [[1, 20], [0, 20], [-5, 20], [-Infinity, 20], [1000, 300], [Infinity, 300], [150, 150]]) {
+    t.setBpm(inp);
+    assert.equal(t.bpm, out, String(inp));
+  }
+  for (const bad of [NaN, undefined, null, 'x']) {
+    t.setBpm(200);
+    t.setBpm(bad);
+    assert.equal(t.bpm, 120, String(bad));
+  }
+  assert.equal(new Transport({ bpm: 0 }).bpm, 20);
+  assert.equal(new Transport({ bpm: -Infinity }).bpm, 20);
+  assert.equal(new Transport({ bpm: Infinity }).bpm, 300);
+  assert.equal(new Transport({ bpm: NaN }).bpm, 120);
+  assert.equal(new Transport({ bpm: 'x' }).bpm, 120);
+});
+
+test('secondsAt is correct after a running locate', () => {
+  const t = new Transport({ bpm: 120 });
+  t.start(0);
+  t.locate(8, 1);                 // elapsed seconds reset to 8*60/120 = 4 at t=1
+  assert.equal(t.secondsAt(1), 4);
+  assert.equal(t.secondsAt(3), 6);
+  assert.equal(t.beatAt(3), 12);
+});
+
+test('backwards beatAt/secondsAt hold at the latest seen time (never go backwards)', () => {
+  const t = new Transport({ bpm: 120 });
+  t.start(0);
+  assert.equal(t.beatAt(5), 10);
+  assert.equal(t.beatAt(3), 10);
+  assert.equal(t.secondsAt(1), 5);
+  assert.equal(t.beatAt(6), 12);
+});
+
+test('backwards setBpm does not double-count time', () => {
+  const t = new Transport({ bpm: 120 });
+  t.start(0);
+  t.setBpm(60, 3);                // beat 6 at t=3
+  t.setBpm(90, 1);                // earlier: treated as t=3, no re-billing
+  assert.equal(t.bpm, 90);
+  assert.equal(t.beatAt(3), 6);
+  near(t.beatAt(5), 9, 'beat at 5');
+  near(t.secondsAt(5), 5, 'sec at 5');
+});
+
+test('single backwards setBpm then later beatAt bills each span once', () => {
+  const t = new Transport({ bpm: 120 });
+  t.start(0);
+  assert.equal(t.beatAt(4), 8);
+  t.setBpm(60, 2);                // earlier than seen (4): folds to t=4 at old tempo
+  assert.equal(t.beatAt(4), 8);
+  assert.equal(t.beatAt(6), 10);
+});
+
+test('non-finite and undefined times are treated as the latest seen time', () => {
+  const t = new Transport({ bpm: 120 });
+  t.start(0);
+  assert.equal(t.beatAt(2), 4);
+  for (const bad of [NaN, undefined, Infinity, -Infinity, 'x', null]) {
+    assert.equal(t.beatAt(bad), 4, String(bad));
+    assert.equal(t.secondsAt(bad), 2, String(bad));
+  }
+  t.setBpm(60, NaN);
+  assert.equal(t.beatAt(2), 4);
+  assert.equal(t.beatAt(3), 5);
+  t.stop(undefined);
+  assert.equal(t.beatAt(10), 5);
+  t.start(NaN);
+  assert.equal(t.beatAt(NaN), 5);
 });
 
 test('setBpm while stopped changes tempo without moving position', () => {

@@ -28,7 +28,10 @@ export const DIVISIONS = (() => {
 
 const isPosFinite = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
 const cleanBpm = (b) => (isPosFinite(b) ? b : DEFAULT_BPM);
-const clampBpm = (b) => Math.min(MAX_BPM, Math.max(MIN_BPM, cleanBpm(b)));
+// Any number (incl. +-Infinity) clamps to [MIN_BPM, MAX_BPM]; NaN / non-number falls back to 120.
+const clampBpm = (b) => (typeof b === 'number' && !Number.isNaN(b)
+  ? Math.min(MAX_BPM, Math.max(MIN_BPM, b))
+  : DEFAULT_BPM);
 
 /** Beats per cycle for a beats-mode value, or null if unknown. */
 function beatsPerCycle(tv) {
@@ -75,16 +78,18 @@ export class Transport {
     this._lastNow = 0;    // latest time seen by any call
   }
 
+  // Time never runs backwards: a non-finite or earlier nowSec is treated as the latest time seen,
+  // so queries hold at that value and no span is ever billed twice.
   _seen(nowSec) {
-    const n = Number.isFinite(nowSec) ? nowSec : this._lastNow;
-    if (n > this._lastNow) this._lastNow = n;
-    return n;
+    if (Number.isFinite(nowSec) && nowSec > this._lastNow) this._lastNow = nowSec;
+    return this._lastNow;
   }
 
   /** Fold elapsed time since the anchor into the stored position (running only). */
   _advance(now) {
+    if (now <= this._t) return;
     if (this.running) {
-      const dt = Math.max(0, now - this._t);
+      const dt = now - this._t;
       this._beat += dt * this.bpm / 60;
       this._sec += dt;
     }
@@ -105,8 +110,10 @@ export class Transport {
     this.running = false;
   }
 
+  // Without nowSec, the position is folded up to the last observed time at the old tempo;
+  // everything after that is billed at the new tempo.
   setBpm(b, nowSec) {
-    const now = this._seen(nowSec === undefined ? this._lastNow : nowSec);
+    const now = this._seen(nowSec);
     this._advance(now);
     this.bpm = clampBpm(b);
   }
@@ -121,12 +128,12 @@ export class Transport {
 
   beatAt(nowSec) {
     const now = this._seen(nowSec);
-    return this.running ? this._beat + Math.max(0, now - this._t) * this.bpm / 60 : this._beat;
+    return this.running ? this._beat + (now - this._t) * this.bpm / 60 : this._beat;
   }
 
   secondsAt(nowSec) {
     const now = this._seen(nowSec);
-    return this.running ? this._sec + Math.max(0, now - this._t) : this._sec;
+    return this.running ? this._sec + (now - this._t) : this._sec;
   }
 
   snapshot() {
