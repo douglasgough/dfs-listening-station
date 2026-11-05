@@ -3,7 +3,7 @@
 // message (and Chrome refuses module loads from file:// anyway): do no work there.
 if (typeof location === 'undefined' || location.protocol !== 'file:') {
   try {
-  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { createChannelPanel }, { createTimelineEditor }, { createMatrix }, { EXAMPLE_LAYERS }] = await Promise.all([
+  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { createChannelPanel }, { createTimelineEditor }, { createMatrix }, { createAudioController }, { createTransportUI }, { createDock }, { EXAMPLE_LAYERS }] = await Promise.all([
     import('./core/state.js'),
     import('./ui/app-state.js'),
     import('./ui/layer-panel.js'),
@@ -11,19 +11,29 @@ if (typeof location === 'undefined' || location.protocol !== 'file:') {
     import('./ui/channel-panel.js'),
     import('./ui/timeline.js'),
     import('./ui/matrix.js'),
+    import('./ui/audio-controller.js'),
+    import('./ui/transport-ui.js'),
+    import('./ui/dock.js'),
     import('./spectrum/examples.js'),
   ]);
 
   const store = createStore(createState());
   const app = createAppState({ store, examples: EXAMPLE_LAYERS });
   const stage = createStage(document.getElementById('stage-host'), { store, app });
+  const audio = createAudioController({ store, app, onStageAnalysers: a => stage.setAnalysers(a) });
   const layerPanel = createLayerPanel(document.getElementById('layers'), app);
   const panel = createChannelPanel(document.getElementById('channels'), {
     store, app,
-    mountTimeline: (slot, ch) => createTimelineEditor(slot, { store, app, channel: ch, getPlayhead: (...a) => window.__app && window.__app.getPlayhead ? window.__app.getPlayhead(...a) : null }),
+    onTrigger: async ch => { if (!audio.listening) await audio.start(); audio.trigger(ch); },
+    mountTimeline: (slot, ch) => createTimelineEditor(slot, { store, app, channel: ch, getPlayhead: (...a) => audio.getPlayhead(...a) }),
   });
 
-  const matrix = createMatrix(document.getElementById('matrix'), { store, app, onLearn: (...a) => (window.__app && window.__app.onLearn ? window.__app.onLearn(...a) : undefined) });
+  const matrix = createMatrix(document.getElementById('matrix'), { store, app, onLearn: cb => audio.onLearn(cb) });
+  const transportUi = createTransportUI(document.getElementById('transport'), { store, audio });
+  const dock = createDock(document.getElementById('dock'), { store, app, audio });
+  // pattern step highlight for the selected channel
+  const stepLoop = () => { panel.setCurrentStep(audio.patternStep(app.selected)); requestAnimationFrame(stepLoop); };
+  requestAnimationFrame(stepLoop);
 
   // tooltips (ported from the prototype)
   const tipEl = document.getElementById('tip');
@@ -57,7 +67,7 @@ if (typeof location === 'undefined' || location.protocol !== 'file:') {
     try { localStorage.setItem('dfs-tips', tipsOn ? '1' : '0'); } catch (e) { /* storage unavailable */ }
   });
 
-  window.__app = { store, app, panel, layerPanel, stage, matrix };
+  window.__app = { store, app, panel, layerPanel, stage, matrix, audio, transportUi, dock, getPlayhead: (...a) => audio.getPlayhead(...a), onLearn: cb => audio.onLearn(cb) };
   console.info('app shell loaded');
   } catch (e) {
     console.error(e);

@@ -316,3 +316,10 @@ fieldset.maplink:disabled { opacity: 0.55; }
 .mxcell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .mxcell.on { background: linear-gradient(to top, color-mix(in srgb, var(--accent) 55%, transparent) calc(var(--amt) * 100%), transparent 0); border-color: var(--accent); }
 .mxcell.on.neg { background: linear-gradient(to top, color-mix(in srgb, var(--rec) 55%, transparent) calc(var(--amt) * 100%), transparent 0); border-color: var(--rec); }
+
+/* transport bar and dock additions (Task 20) */
+.transportbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.transportbar .status.warn { color: var(--rec); }
+.btn.on:not(.primary):not(.rec) { background: var(--line); }
+.strip .pan.bal { accent-color: var(--accent); }
+.strip.dim .sname { opacity: 0.6; }

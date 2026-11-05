@@ -328,3 +328,25 @@ test('subscriberCount tracks subscribe/unsubscribe', () => {
   off();
   assert.equal(store.subscriberCount(), 0);
 });
+
+test('store.load replaces the content in place and notifies everything that changed', async () => {
+  const { deserializePatch, serializePatch, createState, createStore } = await import('../../src/core/state.js');
+  const a = createState(); a.params['ch1.filter.center'] = 0.77; a.matrix.push({ src: 'g.lfo1', dst: 'ch2.filter.width', amount: 0.3 });
+  a.timelines[0].events = [{ t: 0.5, c: 0.3 }]; a.pattern[1][0] = false;
+  const { state: loaded } = deserializePatch(serializePatch(a, []));
+  const store = createStore(createState()), held = store.state, seen = [];
+  store.subscribe((id, v) => seen.push([id, v]));
+  store.load(loaded);
+  assert.equal(store.state, held, 'the state object identity is preserved');
+  assert.equal(store.get('ch1.filter.center'), 0.77);
+  assert.equal(store.state.matrix.length, 5);
+  assert.deepEqual(store.state.timelines[0].events, [{ t: 0.5, c: 0.3 }]);
+  assert.equal(store.state.pattern[1][0], false);
+  const ids = seen.map(x => x[0]);
+  assert.ok(ids.includes('ch1.filter.center') && ids.includes('matrix'));
+  assert.equal(ids.filter(i => i === 'timeline').length, 4);
+  assert.equal(ids.filter(i => i === 'pattern').length, 4);
+  assert.equal(ids.filter(i => i === 'mods').length, 2 * 5 + 2 * 4 + 0 * 1, 'g: 2 lfo; ch1..4: 2 lfo + 2 env each');
+  assert.throws(() => store.load({}), /not a valid state/);
+  assert.throws(() => store.load(null), /not a valid state/);
+});

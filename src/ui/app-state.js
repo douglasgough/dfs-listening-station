@@ -75,6 +75,16 @@ export function createAppState({ store, examples = [] } = {}) {
     return true;
   };
 
+  /** Replace every layer (patch load): clears all, then adds the given layer objects in order. Zoom resets. */
+  app.replaceLayers = list => {
+    for (const l of [...layers]) app.removeLayer(l.id);
+    app.stage = null; app.fullRange = null; app.zoomStack = [];
+    for (const l of list || []) app.addLayer(l);
+    for (let i = 1; i < NUM_CHANNELS; i++) if (app.mapLinked[i]) app.mapLinked[i] = false;
+    app.selected = 0;
+    bump();
+  };
+
   app.setVisible = (id, on) => { if (on) hidden.delete(id); else hidden.add(id); bump(); };
   app.isVisible = id => !hidden.has(id);
 

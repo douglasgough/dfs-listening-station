@@ -17,7 +17,11 @@
  */
 import { buildScore, resolveAt, DEFAULT_SEED } from '../core/score.js';
 import { timeMap } from '../core/transport.js';
-import { NUM_CHANNELS } from '../core/schema.js';
+import { NUM_CHANNELS, channelView } from '../core/schema.js';
+import { eventRoutes } from '../core/modulation.js';
+import { pickEvent } from '../dsp/events.js';
+import { grainsAt } from '../dsp/grains.js';
+import { applyShift } from '../spectrum/analyse.js';
 
 export const STEP_SEC = 0.04;
 export const GRANULAR_STEP_SEC = 0.025;
@@ -46,6 +50,8 @@ export class Driver {
   /**
    * @param o {graph, store, transport, getAnalyses: () => Analysis[4], getStage: () => stage,
    *   cc?: Record|() => Record, seed?, tickMs = 40, lookahead = 0.12, setIntervalFn?, clearIntervalFn?,
+   *   getTake? () => Take|null (a take being replayed: its param changes overlay the state, in transport seconds),
+   *   getHold? () => (phase|null)[4] (timelines frozen on the event being edited),
    *   buildScoreFn? (default buildScore; injectable for tests)}
    */
   constructor(o) {
@@ -61,6 +67,9 @@ export class Driver {
     this.setIntervalFn = o.setIntervalFn || ((fn, ms) => setInterval(fn, ms));
     this.clearIntervalFn = o.clearIntervalFn || ((id) => clearInterval(id));
     this.buildScoreFn = o.buildScoreFn || buildScore;
+    this.getTake = o.getTake;
+    this.getHold = o.getHold;
+    this.lastFrames = new Array(NUM_CHANNELS).fill(null);
     this.clockOffset = 0;
     this.lastNowSec = -Infinity;
     this.cursor = null;
@@ -110,25 +119,54 @@ export class Driver {
     const step = granular ? GRANULAR_STEP_SEC : STEP_SEC;
     const tm = timeMap(this.transport, nowSec);
     const cc = typeof this.cc === 'function' ? this.cc() : this.cc;
+    const take = (typeof this.getTake === 'function' ? this.getTake() : null) || undefined;
+    const timelineHold = typeof this.getHold === 'function' ? this.getHold() : undefined;
     const project = { state: store.state, analyses: this.getAnalyses(), stage: this.getStage() };
     if (this.cursor === null) this.cursor = nowSec;
     const span = planSpan(this.cursor, nowSec, this.lookahead, step);
     if (span) {
-      const frames = this.buildScoreFn(project, { ...span, stepSec: step }, { tm, seed: this.seed, cc });
+      const frames = this.buildScoreFn(project, { ...span, stepSec: step }, { tm, seed: this.seed, cc, take, timelineHold });
       this.cursor = span.endSec;
       const off = this.clockOffset;
       for (let c = 0; c < NUM_CHANNELS; c++) {
         if (!on[c]) continue;
         for (const fr of frames[c]) graph.channels[c].send(toContext(fr, off));
+        if (frames[c].length) this.lastFrames[c] = frames[c][frames[c].length - 1];
       }
     }
 
-    const values = resolveAt(project, nowSec, { tm, cc });
+    const values = resolveAt(project, nowSec, { tm, cc, take, timelineHold });
     const strips = [];
     for (let c = 0; c < NUM_CHANNELS; c++) {
       const p = `ch${c + 1}.strip.`;
       strips.push({ fader: values[p + 'fader'], pan: values[p + 'pan'], mute: store.get(p + 'mute'), solo: store.get(p + 'solo') });
     }
     graph.mixer.apply(strips, values['g.master.gain'], ctxTime);
+  }
+
+  /**
+   * Play one event on channel ch now (the "Trigger now" button). It rides a copy of the channel's latest drone
+   * frame (same targets, so the drone is unaffected). Returns false when nothing could be picked (no layer, no band
+   * under the window, channel off, or no frame sent yet).
+   */
+  trigger(ch) {
+    const last = this.lastFrames[ch], analysis = this.getAnalyses()[ch];
+    if (!last || !analysis || !this.store.get(`ch${ch + 1}.filter.on`)) return false;
+    const nowSec = Math.max(this.graph.ctx.currentTime + this.clockOffset, this.lastNowSec);
+    const tm = timeMap(this.transport, nowSec);
+    const cc = typeof this.cc === 'function' ? this.cc() : this.cc;
+    const take = (typeof this.getTake === 'function' ? this.getTake() : null) || undefined;
+    const project = { state: this.store.state, analyses: [], stage: this.getStage() };
+    const values = resolveAt(project, nowSec, { tm, cc, take });
+    const chv = channelView(values, ch);
+    const shifted = applyShift(analysis, values[`ch${ch + 1}.source.shift`], project.stage);
+    const grains = chv['filter.type'] === 'granular' ? grainsAt(chv, 101 * (ch + 1), tm.secAt(nowSec), 0) : undefined;
+    const pe = pickEvent(chv, shifted, Math.random, grains, {});
+    if (!pe) return false;
+    const t = nowSec + 0.03;
+    const { envRoutes, staticGain } = eventRoutes(this.store.state, ch, { beat: tm.beatAt(t), sec: tm.secAt(t) }, { bpm: tm.bpm, cc });
+    const ev = { t, f: pe.f, amp: pe.amp, pan: pe.pan, envRoutes, staticGain };
+    this.graph.channels[ch].send(toContext({ ...last, t, events: [ev] }, this.clockOffset));
+    return true;
   }
 }

@@ -182,6 +182,25 @@ export function createStore(state) {
       if (problem) throw new Error(problem);
       if (putRoute(state.matrix, r)) notify('matrix', clone(state.matrix));
     },
+    /**
+     * Replace the whole content of the store with `next` (a State from deserializePatch) in place, so every holder
+     * of `store.state` keeps a valid reference, then notify every subscriber of everything that changed: each param id
+     * as (id, value), ('matrix', routes), ('timeline', {ch}) and ('pattern', {ch, i: -1, on: false}) per channel and
+     * ('mods', {owner, kind, index}) per source. Used for loading a patch.
+     */
+    load(next) {
+      if (!isObj(next) || !isObj(next.params) || !isObj(next.mods) || !Array.isArray(next.timelines) || !Array.isArray(next.pattern) || !Array.isArray(next.matrix)) {
+        throw new Error('Cannot load: not a valid state');
+      }
+      state.params = next.params; state.mods = next.mods; state.timelines = next.timelines;
+      state.pattern = next.pattern; state.matrix = next.matrix; state.layers = Array.isArray(next.layers) ? next.layers : [];
+      for (const id of Object.keys(state.params)) notify(id, state.params[id]);
+      notify('matrix', clone(state.matrix));
+      for (let ch = 0; ch < NUM_CHANNELS; ch++) { notify('timeline', { ch }); notify('pattern', { ch, i: -1, on: false }); }
+      for (const [owner, m] of Object.entries(state.mods)) {
+        for (const kind of ['lfo', 'env']) (m[kind] || []).forEach((_, index) => notify('mods', { owner, kind, index }));
+      }
+    },
     /** Test/diagnostic helper: number of live subscribers (used to check that UI teardown does not leak). */
     subscriberCount() { return subs.size; },
     /** Toggle one pattern step. Throws on a bad channel/step/flag. Notifies ('pattern', {ch, i, on}). */

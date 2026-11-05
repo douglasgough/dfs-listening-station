@@ -17,3 +17,4 @@ Environment: `DFS_URL` (default the lerd site above), `CHROME_PATH` (default mac
 
 Scripts: `t18-channel-panel.mjs` (channel panel), `t18b-timeline.mjs` (timeline editor), `t19-matrix.mjs` (modulation matrix).
 Each prints PASS/FAIL per check and writes screenshots to `SHOT_DIR`.
+`t20-audio.mjs` (audio start/stop, meters, transport, MIDI clock via the follower, mixer, trigger, takes, WAV export, patches, mono rebuild).

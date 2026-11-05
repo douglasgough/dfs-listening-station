@@ -222,3 +222,24 @@ test('timelineHold clears when the channel timeline has no events left', () => {
   store.setTimeline(0, { mode: 'jump' });
   assert.equal(app.timelineHold[2], 0.3);
 });
+
+test('replaceLayers swaps every layer, resets zoom/selection/map links, keeps channels pointing at real layers', async () => {
+  const { createState, createStore } = await import('../../src/core/state.js');
+  const { createAppState } = await import('../../src/ui/app-state.js');
+  const { EXAMPLE_LAYERS } = await import('../../src/spectrum/examples.js');
+  const store = createStore(createState()), app = createAppState({ store });
+  const [a, b, c] = EXAMPLE_LAYERS;
+  app.addLayer(a); app.addLayer(b);
+  app.select(2); app.setMapLinked(1, true);
+  app.replaceLayers([c]);
+  assert.deepEqual(app.layers.map(l => l.id), [c.id]);
+  assert.deepEqual(store.state.layers, [c.id]);
+  assert.equal(app.selected, 0);
+  assert.equal(app.mapLinked[1], false);
+  assert.equal(app.zoomStack.length, 0);
+  for (let i = 1; i <= 4; i++) assert.equal(store.get(`ch${i}.source.layer`), c.id);
+  app.replaceLayers([]);
+  assert.equal(app.layers.length, 0);
+  assert.equal(app.stage, null);
+  assert.equal(store.get('ch1.source.layer'), 'none');
+});

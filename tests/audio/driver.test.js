@@ -322,3 +322,72 @@ test('Driver never touches the transport', () => {
   env.driver.stop();
   assert.deepEqual({ running: env.transport.running, bpm: env.transport.bpm }, before);
 });
+
+// ---- take / timeline hold / manual trigger (Task 20) ----------------------------------------------
+
+test('Driver: getTake and getHold reach buildScore (and the mixer resolve)', () => {
+  const state = createState();
+  const store = createStore(state), transport = new Transport({ bpm: 120 });
+  transport.start(0);
+  const graph = fakeGraph(0), timer = fakeTimer(), seen = [];
+  const take = { dur: 5, bpm: 120, events: [{ t: 0, id: 'ch1.drone.bands', value: 0 }] };
+  const hold = [0.25, null, null, null];
+  const driver = new Driver({
+    graph, store, transport, getAnalyses: () => [A, A, A, A], getStage: () => STAGE,
+    setIntervalFn: timer.setIntervalFn, clearIntervalFn: timer.clearIntervalFn,
+    getTake: () => take, getHold: () => hold,
+    buildScoreFn: (project, span, opts) => { seen.push(opts); return [[], [], [], []]; },
+  });
+  driver.tick();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].take, take);
+  assert.equal(seen[0].timelineHold, hold);
+});
+
+test('Driver: without getTake/getHold nothing extra is passed', () => {
+  const { driver } = setup();
+  const seen = [];
+  driver.buildScoreFn = (p, s, opts) => { seen.push(opts); return [[], [], [], []]; };
+  driver.tick();
+  assert.equal(seen[0].take, undefined);
+  assert.equal(seen[0].timelineHold, undefined);
+});
+
+test('Driver.trigger: false before any frame was sent; afterwards sends one event on a copy of the last frame', () => {
+  const { driver, graph } = setup(s => { s.params['ch1.filter.on'] = true; s.params['ch1.filter.center'] = 0.1; s.params['ch1.filter.width'] = 0.3; });
+  assert.equal(driver.trigger(0), false, 'no frame sent yet');
+  driver.tick();
+  const before = graph.channels[0].sent.length;
+  assert.ok(before > 0);
+  assert.equal(driver.trigger(0), true);
+  const fr = graph.channels[0].sent.at(-1);
+  assert.equal(graph.channels[0].sent.length, before + 1);
+  assert.equal(fr.events.length, 1);
+  const e = fr.events[0];
+  assert.ok(Number.isFinite(e.f) && e.f >= 40 && e.f <= 4200 && e.amp > 0, JSON.stringify(e));
+  assert.ok(e.t > 0 && e.t === fr.t, 'the event rides its own frame timestamp');
+  assert.deepEqual(e.envRoutes, [{ a: 0.03, h: 0, d: 1.2, amount: 1 }]);
+  assert.equal(fr.bandF.length, 30, 'the carrier frame keeps the drone arrays');
+});
+
+test('Driver.trigger: false for a disabled channel, a missing analysis, or no band under the window', () => {
+  const a = setup(s => { s.params['ch2.filter.on'] = false; });
+  a.driver.tick();
+  assert.equal(a.driver.trigger(1), false);
+  const b = setup(s => { s.params['ch1.filter.on'] = true; });
+  b.driver.getAnalyses = () => [null, null, null, null];
+  b.driver.tick();
+  assert.equal(b.driver.trigger(0), false);
+  // window parked where Allende has no band, narrow
+  const c = setup(s => { s.params['ch1.filter.on'] = true; s.params['ch1.filter.center'] = 0.95; s.params['ch1.filter.width'] = 0.02; s.params['ch1.filter.soft'] = 0; });
+  c.driver.tick();
+  assert.equal(c.driver.trigger(0), false);
+});
+
+test('Driver.trigger applies the clockOffset to the event timestamp (context time)', () => {
+  const { driver, graph } = setup(s => { s.params['ch1.filter.on'] = true; s.params['ch1.filter.center'] = 0.1; s.params['ch1.filter.width'] = 0.3; });
+  driver.tick(); driver.clockOffset = 5;
+  assert.equal(driver.trigger(0), true);
+  const fr = graph.channels[0].sent.at(-1);
+  assert.ok(fr.t < 1 && fr.events[0].t === fr.t, `context time stamp, got ${fr.t}`);
+});
