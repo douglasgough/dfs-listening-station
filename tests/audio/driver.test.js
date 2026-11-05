@@ -197,14 +197,14 @@ test('Driver: timestamps are converted by clockOffset; setGraph keeps span time 
     for (const e of fr.events) { nev++; assert.ok(e.t > fr.t - EPS && e.t <= fr.t + 0.04 + EPS, `event ${e.t} frame ${fr.t}`); }
   }
   assert.ok(nev > 0);
-  // the new graph's mixer gets the strips on its first tick, in the new context's time
-  assert.equal(g2.mixer.calls.length, 1);
+  // the new graph's mixer is driven every tick, in the new context's time
+  assert.equal(g2.mixer.calls.length, 31);
   assert.equal(g2.mixer.calls[0].t, 0.34);
   // nothing more goes to the old graph
   assert.equal(env.graph.channels[0].sent.length, oldSent.length);
 });
 
-test('Driver: mixer.apply gets the strips and master from the store', () => {
+test('Driver: mixer.apply gets the strips and master from the store, every tick', () => {
   const env = setup();
   env.store.set('ch1.strip.pan', -0.5);
   env.store.set('ch2.strip.fader', 0.5);
@@ -212,23 +212,106 @@ test('Driver: mixer.apply gets the strips and master from the store', () => {
   env.store.set('ch4.strip.solo', true);
   env.store.set('g.master.gain', 0.3);
   env.driver.start(); // ticks once at once
-  step(env);          // nothing changed: no second apply
-  assert.equal(env.graph.mixer.calls.length, 1);
-  const call = env.graph.mixer.calls[0];
+  step(env);          // nothing changed: applied again anyway (R31.6)
+  assert.equal(env.graph.mixer.calls.length, 2);
   const f0 = 60 / 66;
-  assert.deepEqual(call.strips, [
+  const expected = [
     { fader: f0, pan: -0.5, mute: false, solo: false },
     { fader: 0.5, pan: 0, mute: false, solo: false },
     { fader: f0, pan: 0, mute: true, solo: false },
     { fader: f0, pan: 0, mute: false, solo: true },
-  ]);
-  assert.equal(call.master, 0.3);
-  assert.equal(call.t, 0);
+  ];
+  for (const [i, call] of env.graph.mixer.calls.entries()) {
+    assert.deepEqual(call.strips, expected);
+    assert.equal(call.master, 0.3);
+    assert.equal(call.t, i === 0 ? 0 : 0.04);
+  }
   env.store.set('ch2.strip.fader', 0.25);
   step(env);
-  assert.equal(env.graph.mixer.calls.length, 2);
-  assert.equal(env.graph.mixer.calls[1].strips[1].fader, 0.25);
-  assert.equal(env.graph.mixer.calls[1].t, env.graph.ctx.currentTime);
+  assert.equal(env.graph.mixer.calls.length, 3);
+  assert.equal(env.graph.mixer.calls[2].strips[1].fader, 0.25);
+  assert.equal(env.graph.mixer.calls[2].t, env.graph.ctx.currentTime);
+});
+
+test('Driver: matrix modulation of strip fader and master gain reaches mixer.apply', () => {
+  const env = setup(s => {
+    s.mods.g.lfo[0] = { shape: 'sine', rate: { mode: 'hz', value: 1 }, phase: 0, seed: 1 };
+    s.matrix.push({ src: 'g.lfo1', dst: 'ch1.strip.fader', amount: 0.5 });
+    s.matrix.push({ src: 'g.lfo1', dst: 'g.master.gain', amount: 0.5 });
+  });
+  env.driver.start();
+  for (let i = 0; i < 25; i++) step(env);
+  const calls = env.graph.mixer.calls;
+  assert.equal(calls.length, 26);
+  const faders = calls.map(c => c.strips[0].fader), masters = calls.map(c => c.master);
+  assert.ok(new Set(faders).size > 10, `fader not modulated: ${faders}`);
+  assert.ok(new Set(masters).size > 10, `master not modulated: ${masters}`);
+  for (const v of [...faders, ...masters]) assert.ok(v >= 0 && v <= 1, `out of range ${v}`);
+  // unrouted strips keep their base value
+  for (const c of calls) assert.equal(c.strips[1].fader, 60 / 66);
+});
+
+test('Driver: after setGraph the first tick applies the mixer of the new graph', () => {
+  const env = setup();
+  env.driver.start();
+  step(env);
+  const g2 = fakeGraph(0.5);
+  env.driver.setGraph(g2);
+  assert.equal(g2.mixer.calls.length, 0);
+  g2.ctx.currentTime = 0.54;
+  env.timer.fn();
+  assert.equal(g2.mixer.calls.length, 1);
+  assert.equal(g2.mixer.calls[0].t, 0.54);
+  assert.equal(g2.mixer.calls[0].master, 0.7);
+});
+
+test('Driver: a cursor far behind restarts at now without overlapping already-sent frames', () => {
+  const env = setup();
+  env.driver.start(); // frames from 0 up to ~0.12
+  const before = env.graph.channels[0].sent.map(f => f.t);
+  env.graph.ctx.currentTime = 2; // the timer stalled for 2 s
+  env.timer.fn();
+  const after = env.graph.channels[0].sent.slice(before.length).map(f => f.t);
+  assert.ok(after.length > 0);
+  assert.equal(after[0], 2);
+  assert.ok(after[0] > before[before.length - 1]);
+  assertContiguous(after, 0.04);
+});
+
+test('Driver: converting to context time does not mutate the frames buildScore returned', () => {
+  const made = [];
+  const fakeScore = (project, span) => {
+    const frames = [[], [], [], []];
+    for (let c = 0; c < 4; c++) {
+      for (let t = span.startSec; t < span.endSec - 1e-9; t += span.stepSec) {
+        const fr = { t, events: [{ t: t + 0.01, f: 440 }] };
+        frames[c].push(fr);
+        made.push({ fr, t, et: t + 0.01 });
+      }
+    }
+    return frames;
+  };
+  const state = createState();
+  const store = createStore(state);
+  const transport = new Transport();
+  transport.start(10);
+  const graph = fakeGraph(10), timer = fakeTimer();
+  const driver = new Driver({ graph, store, transport, getAnalyses: () => [A, A, A, A], getStage: () => STAGE,
+    setIntervalFn: timer.setIntervalFn, clearIntervalFn: timer.clearIntervalFn, buildScoreFn: fakeScore });
+  driver.start();
+  const g2 = fakeGraph(1);
+  driver.setGraph(g2); // clockOffset 9
+  g2.ctx.currentTime = 1.04;
+  timer.fn();
+  assert.ok(g2.channels[0].sent.length > 0);
+  for (const m of made) {
+    assert.equal(m.fr.t, m.t);
+    assert.equal(m.fr.events[0].t, m.et);
+  }
+  // and the converted copies are shifted by clockOffset
+  const s0 = g2.channels[0].sent[0];
+  assert.ok(Math.abs(s0.events[0].t - (s0.t + 0.01)) < 1e-9);
+  assert.ok(s0.t < 2);
 });
 
 test('Driver never touches the transport', () => {

@@ -11,10 +11,11 @@
  *
  * Frames sit on a grid: each span starts where the previous one ended (cursor), so consecutive ticks
  * never duplicate or skip a frame. Step 0.04 s, 0.025 s while any enabled channel is granular.
- * Mixer settings are pushed whenever they change (and on the first tick of each graph), not every tick,
- * so the AudioParam timelines do not fill with identical automation events.
+ * Every tick the mixer gets the strip faders/pans and the master gain RESOLVED at nowSec (base value +
+ * matrix modulation, via resolveAt with the tick's time map and cc; no take), and mute/solo as base
+ * values (not modulatable).
  */
-import { buildScore, DEFAULT_SEED } from '../core/score.js';
+import { buildScore, resolveAt, DEFAULT_SEED } from '../core/score.js';
 import { timeMap } from '../core/transport.js';
 import { NUM_CHANNELS } from '../core/schema.js';
 
@@ -44,7 +45,8 @@ const toContext = (fr, off) => (off === 0 ? fr : {
 export class Driver {
   /**
    * @param o {graph, store, transport, getAnalyses: () => Analysis[4], getStage: () => stage,
-   *   cc?: Record|() => Record, seed?, tickMs = 40, lookahead = 0.12, setIntervalFn?, clearIntervalFn?}
+   *   cc?: Record|() => Record, seed?, tickMs = 40, lookahead = 0.12, setIntervalFn?, clearIntervalFn?,
+   *   buildScoreFn? (default buildScore; injectable for tests)}
    */
   constructor(o) {
     this.graph = o.graph;
@@ -58,6 +60,7 @@ export class Driver {
     this.lookahead = o.lookahead ?? 0.12;
     this.setIntervalFn = o.setIntervalFn || ((fn, ms) => setInterval(fn, ms));
     this.clearIntervalFn = o.clearIntervalFn || ((id) => clearInterval(id));
+    this.buildScoreFn = o.buildScoreFn || buildScore;
     this.clockOffset = 0;
     this.lastNowSec = -Infinity;
     this.cursor = null;
@@ -67,7 +70,6 @@ export class Driver {
 
   _resetGraphState() {
     this.enabled = new Array(NUM_CHANNELS).fill(true); // a new ChannelEngine starts enabled
-    this.mixKey = null;
   }
 
   start() {
@@ -106,14 +108,13 @@ export class Driver {
     }
 
     const step = granular ? GRANULAR_STEP_SEC : STEP_SEC;
+    const tm = timeMap(this.transport, nowSec);
+    const cc = typeof this.cc === 'function' ? this.cc() : this.cc;
+    const project = { state: store.state, analyses: this.getAnalyses(), stage: this.getStage() };
     if (this.cursor === null) this.cursor = nowSec;
     const span = planSpan(this.cursor, nowSec, this.lookahead, step);
     if (span) {
-      const tm = timeMap(this.transport, nowSec);
-      const cc = typeof this.cc === 'function' ? this.cc() : this.cc;
-      const frames = buildScore(
-        { state: store.state, analyses: this.getAnalyses(), stage: this.getStage() },
-        { ...span, stepSec: step }, { tm, seed: this.seed, cc });
+      const frames = this.buildScoreFn(project, { ...span, stepSec: step }, { tm, seed: this.seed, cc });
       this.cursor = span.endSec;
       const off = this.clockOffset;
       for (let c = 0; c < NUM_CHANNELS; c++) {
@@ -122,16 +123,12 @@ export class Driver {
       }
     }
 
+    const values = resolveAt(project, nowSec, { tm, cc });
     const strips = [];
     for (let c = 0; c < NUM_CHANNELS; c++) {
       const p = `ch${c + 1}.strip.`;
-      strips.push({ fader: store.get(p + 'fader'), pan: store.get(p + 'pan'), mute: store.get(p + 'mute'), solo: store.get(p + 'solo') });
+      strips.push({ fader: values[p + 'fader'], pan: values[p + 'pan'], mute: store.get(p + 'mute'), solo: store.get(p + 'solo') });
     }
-    const master = store.get('g.master.gain');
-    const key = JSON.stringify([strips, master]);
-    if (key !== this.mixKey) {
-      graph.mixer.apply(strips, master, ctxTime);
-      this.mixKey = key;
-    }
+    graph.mixer.apply(strips, values['g.master.gain'], ctxTime);
   }
 }

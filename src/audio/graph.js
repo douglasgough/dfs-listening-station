@@ -22,18 +22,31 @@ export async function createGraph({ live, stereo = true, loopSec = 0, ctx, seed 
   if (!live && !ctx) throw new Error('createGraph: an offline graph needs opts.ctx (an OfflineAudioContext)');
   const own = !!live && !ctx;
   if (own) ctx = new AudioContext({ latencyHint: 'interactive' });
+  const closeOwn = () => {
+    if (!own) return;
+    try { const p = ctx.close(); if (p && p.catch) p.catch(() => {}); } catch { /* closing is best effort */ }
+  };
   try {
     await Promise.all([addModuleOnce(ctx, channelVoiceUrl()), addModuleOnce(ctx, mixerBusUrl())]);
   } catch (e) {
-    if (own) ctx.close().catch(() => {});
+    closeOwn();
     throw new Error(FILE_PROTOCOL_MESSAGE, { cause: e });
   }
-  const mixer = new Mixer(ctx, ctx.destination, { stereo, live: !!live });
+  let mixer = null;
   const channels = [];
-  for (let i = 0; i < NUM_CHANNELS; i++) {
-    const ch = new ChannelEngine(ctx, { stereo, seed: seed + i, loopSec, plain, stats });
-    ch.connect(mixer.input(i));
-    channels.push(ch);
+  try {
+    mixer = new Mixer(ctx, ctx.destination, { stereo, live: !!live });
+    for (let i = 0; i < NUM_CHANNELS; i++) {
+      const ch = new ChannelEngine(ctx, { stereo, seed: seed + i, loopSec, plain, stats });
+      channels.push(ch);
+      ch.connect(mixer.input(i));
+    }
+  } catch (e) {
+    // any failure after the context exists: release what was built and close a context we own
+    for (const ch of channels) { try { ch.dispose(); } catch { /* already broken */ } }
+    if (mixer) { try { mixer.dispose(); } catch { /* already broken */ } }
+    closeOwn();
+    throw e;
   }
   return {
     ctx, channels, mixer,
