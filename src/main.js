@@ -3,18 +3,20 @@
 // message (and Chrome refuses module loads from file:// anyway): do no work there.
 if (typeof location === 'undefined' || location.protocol !== 'file:') {
   try {
-  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { EXAMPLE_LAYERS }] = await Promise.all([
+  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { createChannelPanel }, { EXAMPLE_LAYERS }] = await Promise.all([
     import('./core/state.js'),
     import('./ui/app-state.js'),
     import('./ui/layer-panel.js'),
     import('./ui/stage.js'),
+    import('./ui/channel-panel.js'),
     import('./spectrum/examples.js'),
   ]);
 
   const store = createStore(createState());
   const app = createAppState({ store, examples: EXAMPLE_LAYERS });
   const stage = createStage(document.getElementById('stage-host'), { store, app });
-  const panel = createLayerPanel(document.getElementById('layers'), app);
+  const layerPanel = createLayerPanel(document.getElementById('layers'), app);
+  const panel = createChannelPanel(document.getElementById('channels'), { store, app });
 
   // tooltips (ported from the prototype)
   const tipEl = document.getElementById('tip');
@@ -48,7 +50,7 @@ if (typeof location === 'undefined' || location.protocol !== 'file:') {
     try { localStorage.setItem('dfs-tips', tipsOn ? '1' : '0'); } catch (e) { /* storage unavailable */ }
   });
 
-  window.__app = { store, app, panel, stage };
+  window.__app = { store, app, panel, layerPanel, stage };
   console.info('app shell loaded');
   } catch (e) {
     console.error(e);

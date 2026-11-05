@@ -244,3 +244,50 @@ body { padding-bottom: calc(var(--dockH, 0px) + 28px); }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .stagebox { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 #stage-host { margin-bottom: 12px; }
+
+/* channel panel (Task 18) */
+.chpanel { display: flex; flex-direction: column; }
+.chtabs { display: flex; flex-wrap: wrap; gap: 3px; }
+.chtab { position: relative; background: transparent; border: 1px solid var(--line); border-bottom: 0; border-radius: 6px 6px 0 0; padding: 8px 20px 8px 32px; color: var(--dim); cursor: pointer; min-height: 38px; font-family: var(--mono); }
+.chtab:hover { color: var(--c); }
+.chtab.on { background: var(--panel); border-color: var(--c); color: var(--c); position: relative; top: 1px; z-index: 1; }
+.chtab:focus-visible { outline: 2px solid var(--c); outline-offset: -2px; }
+.chtab .tabdot { position: absolute; left: 13px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; border: 1px solid var(--c); }
+.chtab.en .tabdot { background: var(--c); }
+.chbody { border: 1px solid var(--c); border-radius: 0 6px 6px 6px; background: var(--panel); padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.chhint { margin: 0; padding: 6px 10px; border: 1px dashed var(--rec); border-radius: 4px; color: var(--rec); font-size: 13px; }
+.chcols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 28px; align-items: start; }
+@media (min-width: 900px) { .chcols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.chcol { display: flex; flex-direction: column; min-width: 0; }
+.chbody.off .sec:not(.sec-filter) { opacity: 0.5; }
+.sec { border-top: 1px solid var(--line); padding: 2px 0; }
+.chcol .sec:first-child { border-top: 0; }
+.sec > summary { cursor: pointer; padding: 10px 0 8px; list-style: none; display: flex; }
+.sec > summary::-webkit-details-marker { display: none; }
+.sec > summary::before { content: '\25B8'; color: var(--dim); width: 16px; flex: none; }
+.sec[open] > summary::before { content: '\25BE'; }
+.sec > summary:focus-visible, .subsec > summary:focus-visible { outline: 2px solid var(--c); outline-offset: 2px; }
+.sec h3 { margin: 0; font-family: var(--display); font-weight: 500; font-size: 1.05rem; letter-spacing: 0.02em; }
+.sec h3 small { font-family: var(--ui); font-weight: 400; font-size: 12px; color: var(--dim); margin-left: 8px; letter-spacing: 0; }
+.secbody { display: flex; flex-direction: column; gap: 10px; padding: 0 0 12px 16px; min-width: 0; }
+.secbody .grp { display: flex; flex-direction: column; gap: 10px; }
+.secbody .grp[hidden] { display: none; }
+.subh { margin: 6px 0 0; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); font-weight: 500; }
+.chbody select, .chbody input[type=number] { background: var(--bg); }
+.chbody .seg button.on { background: var(--line); color: var(--c); }
+.chbody input[type=range]::-webkit-slider-thumb { background: var(--c); }
+.chbody input[type=range]::-moz-range-thumb { background: var(--c); }
+.chbody .steps button.on { background: var(--c); border-color: var(--c); }
+.chbody .steps button.now { outline-color: var(--fg); }
+.chbody .btn.small { min-height: 30px; padding: 3px 12px; font-size: 13px; }
+fieldset.maplink { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+fieldset.maplink:disabled { opacity: 0.55; }
+.subsec { border-top: 1px dashed var(--line); padding: 4px 0; }
+.subsec > summary { cursor: pointer; padding: 6px 0; font-size: 13px; color: var(--fg); }
+.srced { display: flex; flex-direction: column; gap: 8px; padding: 4px 0 8px; }
+.srchead { display: flex; align-items: baseline; gap: 10px; }
+.srcid { font-family: var(--mono); font-size: 12px; color: var(--c, var(--accent)); border: 1px solid var(--line); border-radius: 3px; padding: 0 6px; }
+.srcprev { display: block; width: 100%; height: 56px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+.srcmsg { color: var(--rec); font-size: 12px; min-height: 0; }
+.srcmsg:empty { display: none; }
+.subsec .srchead b { display: none; }

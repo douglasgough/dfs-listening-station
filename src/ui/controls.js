@@ -15,7 +15,7 @@ export const noteName = f => { const n = Math.round(12 * Math.log2(f / 440) + 69
 export const fmtHz = f => (f < 1000 ? f.toFixed(f < 100 ? 1 : 0) + ' Hz' : (f / 1000).toFixed(2) + ' kHz');
 export const fmtX = v => { const a = Math.abs(v); return String(+v.toFixed(a < 10 ? 3 : a < 100 ? 2 : a < 1000 ? 1 : 0)); };
 const pct = v => Math.round(v * 100) + '%';
-const fmtS = v => (v < 1 ? Math.round(v * 1000) + ' ms' : (v < 10 ? v.toFixed(2) : v.toFixed(1)) + ' s');
+export const fmtS = v => (v < 1 ? Math.round(v * 1000) + ' ms' : (v < 10 ? v.toFixed(2) : v.toFixed(1)) + ' s');
 const fmtPer = s => (s < 60 ? s.toFixed(s < 10 ? 1 : 0) + ' s' : (s / 60).toFixed(1) + ' min');
 const dB = v => (v < 0.01 ? 'off' : (20 * Math.log10(v)).toFixed(1) + ' dB');
 const sig3 = v => String(+Number(v).toPrecision(3));
@@ -57,16 +57,19 @@ export function formatParam(def, value, ctx = {}) {
   return sig3(value) + (def.unit ? ' ' + def.unit : '');
 }
 
+/** A def tapers logarithmically when it says `log: true` (non-schema sliders) or its key is in LOG_TAPER. */
+const isLog = def => (def.log !== undefined ? def.log : LOG_TAPER.has(def.key));
+
 /** Slider position 0..1000 for a value (log taper where LOG_TAPER lists the key). */
 export function toSliderPos(def, v) {
-  const t = LOG_TAPER.has(def.key)
+  const t = isLog(def)
     ? Math.log(v / def.min) / Math.log(def.max / def.min)
     : (v - def.min) / (def.max - def.min);
   return SLIDER_STEPS * Math.min(1, Math.max(0, t));
 }
 export function fromSliderPos(def, s) {
   const t = Math.min(1, Math.max(0, s / SLIDER_STEPS));
-  return LOG_TAPER.has(def.key) ? def.min * Math.pow(def.max / def.min, t) : def.min + (def.max - def.min) * t;
+  return isLog(def) ? def.min * Math.pow(def.max / def.min, t) : def.min + (def.max - def.min) * t;
 }
 
 const ENUM_LABELS = { 'vwin.mode': { 0: 'Off', 1: 'Reflectance', 2: 'Depth' } };
@@ -83,6 +86,49 @@ function el(tag, props = {}, ...kids) {
 }
 const option = (v, t) => el('option', { value: String(v), text: t });
 let uid = 0;
+
+/**
+ * Reusable time-value control (Synced division / Free Hz or seconds). getValue() returns the current TimeValue,
+ * setValue(tv) writes a new one (may throw; the control then reverts to getValue()). opts: {label, tip}.
+ * Appends to `host`; returns {el, refresh}. The caller calls refresh() when the value changes elsewhere.
+ */
+export function createTimeControl(host, getValue, setValue, opts = {}) {
+  const label = opts.label || 'Time';
+  const root = el('div', { class: 'inline timectl', tip: opts.tip });
+  const seg = el('span', { class: 'seg', role: 'group', 'aria-label': label + ' mode' });
+  const bS = el('button', { type: 'button', text: 'Synced' });
+  const bF = el('button', { type: 'button', text: 'Free' });
+  seg.append(bS, bF);
+  const div = el('select', { 'aria-label': label + ' division' });
+  for (const k of Object.keys(DIVISIONS)) div.append(option(k, k));
+  const num = el('input', { type: 'number', min: '0', step: 'any', 'aria-label': label + ' value' });
+  const unit = el('select', { 'aria-label': label + ' unit' });
+  unit.append(option('hz', 'Hz'), option('sec', 's'));
+  const freeBox = el('span', { class: 'inline' }, num, unit);
+  root.append(el('span', { class: 'lbl', text: label }), seg, div, freeBox);
+  const write = v => { try { setValue(v); } catch (e) { redraw(); } };
+  const writeFree = () => {
+    const value = +num.value;
+    if (Number.isFinite(value) && value > 0) write({ mode: unit.value, value });
+    else redraw(); // invalid: revert the field to the stored value
+  };
+  bS.addEventListener('click', () => write({ mode: 'beats', div: div.value }));
+  bF.addEventListener('click', () => { const cur = getValue(); write({ mode: unit.value, value: cur.mode === 'beats' ? (+num.value > 0 ? +num.value : 1) : cur.value }); });
+  div.addEventListener('change', () => write({ mode: 'beats', div: div.value }));
+  num.addEventListener('change', writeFree);
+  unit.addEventListener('change', writeFree);
+  function redraw() {
+    const v = getValue(), synced = v.mode === 'beats';
+    bS.classList.toggle('on', synced); bF.classList.toggle('on', !synced);
+    bS.setAttribute('aria-pressed', String(synced)); bF.setAttribute('aria-pressed', String(!synced));
+    div.hidden = !synced; freeBox.hidden = synced;
+    if (synced) div.value = Object.hasOwn(DIVISIONS, v.div) ? v.div : '1/4';
+    else { unit.value = v.mode; num.value = String(v.value); }
+  }
+  host.append(root);
+  redraw();
+  return { el: root, refresh: redraw };
+}
 
 /**
  * Build the control for param `id` inside `host`. opts: {live?: () => resolvedValues|null, options?: () => [value,label][]
@@ -132,36 +178,10 @@ export function bindParam(host, id, store, opts = {}) {
     sel.addEventListener('change', () => store.set(id, def.options.find(o => String(o) === sel.value)));
     redraw = () => { sel.value = String(store.get(id)); };
   } else if (def.type === 'time') {
-    root = el('div', { class: 'inline timectl', tip: def.tip });
-    const seg = el('span', { class: 'seg', role: 'group', 'aria-label': label + ' mode' });
-    const bS = el('button', { type: 'button', text: 'Synced' });
-    const bF = el('button', { type: 'button', text: 'Free' });
-    seg.append(bS, bF);
-    const div = el('select', { 'aria-label': label + ' division' });
-    for (const k of Object.keys(DIVISIONS)) div.append(option(k, k));
-    const num = el('input', { type: 'number', min: '0', step: 'any', 'aria-label': label + ' value' });
-    const unit = el('select', { 'aria-label': label + ' unit' });
-    unit.append(option('hz', 'Hz'), option('sec', 's'));
-    const freeBox = el('span', { class: 'inline' }, num, unit);
-    root.append(el('span', { class: 'lbl', text: label }), seg, div, freeBox);
-    const writeFree = () => {
-      const value = +num.value;
-      if (Number.isFinite(value) && value > 0) store.set(id, { mode: unit.value, value });
-      else redraw(); // invalid: revert the field to the stored value
-    };
-    bS.addEventListener('click', () => store.set(id, { mode: 'beats', div: div.value }));
-    bF.addEventListener('click', () => { const cur = store.get(id); store.set(id, { mode: unit.value, value: cur.mode === 'beats' ? (+num.value > 0 ? +num.value : 1) : cur.value }); });
-    div.addEventListener('change', () => store.set(id, { mode: 'beats', div: div.value }));
-    num.addEventListener('change', writeFree);
-    unit.addEventListener('change', writeFree);
-    redraw = () => {
-      const v = store.get(id), synced = v.mode === 'beats';
-      bS.classList.toggle('on', synced); bF.classList.toggle('on', !synced);
-      bS.setAttribute('aria-pressed', String(synced)); bF.setAttribute('aria-pressed', String(!synced));
-      div.hidden = !synced; freeBox.hidden = synced;
-      if (synced) div.value = Object.hasOwn(DIVISIONS, v.div) ? v.div : '1/4';
-      else { unit.value = v.mode; num.value = String(v.value); }
-    };
+    const tc = createTimeControl(host, () => store.get(id), v => store.set(id, v), { label, tip: def.tip });
+    root = tc.el;
+    redraw = tc.refresh;
+    cleanups.push(() => { /* element removed with root */ });
   } else if (def.type === 'id') {
     root = el('div', { class: 'inline', tip: def.tip });
     const sel = el('select', { id: uniq });
@@ -181,7 +201,7 @@ export function bindParam(host, id, store, opts = {}) {
     throw new Error(`${id}: unsupported param type ${def.type}`);
   }
 
-  host.append(root);
+  if (root.parentNode !== host) host.append(root);
   redraw();
   cleanups.push(onParams(store, [id], redraw));
   return {
