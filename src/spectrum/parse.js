@@ -44,23 +44,46 @@ const INTENSITY_WORDS = new Set(['intensity', 'strength', 'flux', 'depth', 'ampl
 const WIDTH_WORDS = new Set(['width', 'fwhm']);
 const LABEL_WORDS = new Set(['label', 'species', 'name', 'element', 'id']);
 const TYPE_WORDS = new Set(['type', 'kind']);
-const SAMPLED_Y_WORDS = new Set(['intensity', 'flux', 'value', 'reflectance', 'depth', 'y']);
+const SAMPLED_Y_WORDS = new Set(['intensity', 'strength', 'amplitude', 'height', 'flux', 'value', 'reflectance', 'depth', 'y']);
 const CATEGORIES = [['position', POSITION_WORDS], ['intensity', INTENSITY_WORDS], ['width', WIDTH_WORDS], ['label', LABEL_WORDS], ['type', TYPE_WORDS]];
 
-const isCommentLine = t => t.startsWith('//') || '#;%'.includes(t[0]);
+const COMMENT_MARKERS = ['//', '#', ';', '%'];
+const commentMarker = t => COMMENT_MARKERS.find(m => t.startsWith(m));
 const toNum = cell => {
   const t = cell === undefined ? '' : String(cell).trim();
   return t === '' ? NaN : Number(t);
 };
 const isNumericCell = cell => Number.isFinite(toNum(cell));
 
-/** Non-blank, non-comment lines with their 1-based line numbers in the original text. */
+/**
+ * Non-blank lines with their 1-based line numbers in the original text.
+ * Comment markers (`#`, `//`, `;`, `%`) are honoured only BEFORE the header (the first content line); after it every
+ * non-blank line is data, so a row like `;2;B` is a row with an empty position rather than a vanished comment.
+ * Exception: if the very first non-blank line is a comment whose text (marker stripped) names a position-like and an
+ * intensity-like column (`# wavelength,intensity,width`), it is used as the header.
+ */
 function contentLines(text) {
   const out = [];
-  const lines = String(text).split(/\r?\n/);
+  const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/);
+  let started = false, firstNonBlank = true;
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();
-    if (t && !isCommentLine(t)) out.push({ n: i + 1, t });
+    if (!t) continue;
+    if (!started) {
+      const m = commentMarker(t);
+      if (m) {
+        if (firstNonBlank) {
+          const stripped = t.slice(m.length).trim();
+          const { cols } = headerColumns(splitCells(stripped, detectDelimiter(stripped)));
+          if (cols.position !== undefined && cols.intensity !== undefined) { out.push({ n: i + 1, t: stripped }); started = true; }
+        }
+        firstNonBlank = false;
+        continue;
+      }
+      started = true;
+    }
+    firstNonBlank = false;
+    out.push({ n: i + 1, t });
   }
   return out;
 }
@@ -236,38 +259,74 @@ export function parseCsvSampled(text, name, opts = {}) {
 
 /** Header analysis of the first content line, or null when it is not a non-numeric header with >= 2 columns. */
 function peekHeader(text) {
-  const first = contentLines(text)[0];
+  const content = contentLines(text);
+  const first = content[0];
   if (!first) return null;
-  const cells = splitCells(first.t, detectDelimiter(first.t));
+  const delim = detectDelimiter(first.t);
+  const cells = splitCells(first.t, delim);
   if (cells.length < 2 || isNumericCell(cells[0])) return null;
-  return { cells, ...headerColumns(cells) };
+  return { cells, content, delim, ...headerColumns(cells) };
+}
+
+const BARE_LINE_WORDS = ['intensity', 'strength', 'amplitude', 'height'];
+const DENSE_MIN_ROWS = 64;
+const UNIFORM_MAX_GAP_RATIO = 5;
+
+/** True when the data rows (after the header) look like a regularly sampled spectrum: >= 64 distinct finite positions
+ *  whose largest gap is at most 5x the median gap. */
+function looksSampled(h) {
+  const pc = h.cols.position;
+  const xs = [];
+  for (let i = 1; i < h.content.length; i++) {
+    const v = toNum(splitCells(h.content[i].t, h.delim)[pc]);
+    if (Number.isFinite(v)) xs.push(v);
+  }
+  xs.sort((p, q) => p - q);
+  const u = xs.filter((v, i) => i === 0 || v !== xs[i - 1]);
+  if (u.length < DENSE_MIN_ROWS) return false;
+  const gaps = [];
+  for (let i = 1; i < u.length; i++) gaps.push(u[i] - u[i - 1]);
+  const sorted = gaps.slice().sort((p, q) => p - q);
+  const median = sorted[sorted.length >> 1];
+  return sorted[sorted.length - 1] <= UNIFORM_MAX_GAP_RATIO * median;
+}
+
+/** 'lines' | 'sampled' | null for a headered file with position and intensity-like columns (rule R23, see IMPORTERS). */
+function classifyHeadered(text) {
+  const h = peekHeader(text);
+  if (!h || h.cols.position === undefined || h.cols.intensity === undefined) return null;
+  if (h.cols.width !== undefined || h.cols.label !== undefined || h.cols.type !== undefined) return 'lines';
+  if (h.cells.length === 2 && BARE_LINE_WORDS.includes(h.toks.intensity)) return looksSampled(h) ? 'sampled' : 'lines';
+  return null;
 }
 
 /**
  * Detector registry, tried in order; the first whose detect(text) is true parses the text. A FITS parser can be
  * inserted here later as another {name, detect, parse}.
  *  1. line-list    : non-numeric header with a position-like and an intensity-like column, plus either a
- *                    width/fwhm/label/species/type column, or exactly two columns whose intensity header is a
- *                    line-style word (intensity, strength, amplitude, height) rather than flux/depth.
- *  2. csv-sampled  : non-numeric header with a flux|value|reflectance|y column.
+ *                    width/fwhm/label/species/type column (always a line list), or the "bare" case: exactly two columns
+ *                    whose intensity header is a line-style word (intensity, strength, amplitude, height).
+ *                    Bare files are ambiguous, so (R23) a bare file with >= 64 distinct positions whose largest gap is at
+ *                    most 5x the median gap is a regularly sampled spectrum and is NOT a line list; it falls through to
+ *                    csv-sampled. Fewer rows or irregular spacing stay a line list (e.g. 5 irregular rows, or 100 rows
+ *                    with a 5x+ gap). Calling parseLineList directly is never redirected.
+ *  2. csv-sampled  : non-numeric header with a flux|value|reflectance|y column, or a dense uniform bare file (above).
  *  3. spectrum-text: anything else, as headerless two-column text (reflectance); throws if it is not one.
+ * A header may be a first-line comment (`# wavelength,intensity,width`); comment markers elsewhere count only before it.
  */
 export const IMPORTERS = [
   {
     name: 'line-list',
-    detect(text) {
-      const h = peekHeader(text);
-      if (!h || h.cols.position === undefined || h.cols.intensity === undefined) return false;
-      if (h.cols.width !== undefined || h.cols.label !== undefined || h.cols.type !== undefined) return true;
-      return h.cells.length === 2 && ['intensity', 'strength', 'amplitude', 'height'].includes(h.toks.intensity);
-    },
+    detect: text => classifyHeadered(text) === 'lines',
     parse: (text, name, opts) => parseLineList(text, name, opts),
   },
   {
     name: 'csv-sampled',
     detect(text) {
       const h = peekHeader(text);
-      return !!h && h.cells.some(c => headerTokens(c).some(tok => ['flux', 'value', 'reflectance', 'y'].includes(tok)));
+      if (!h) return false;
+      if (h.cells.some(c => headerTokens(c).some(tok => ['flux', 'value', 'reflectance', 'y'].includes(tok)))) return true;
+      return classifyHeadered(text) === 'sampled';
     },
     parse: (text, name, opts) => ({ layer: parseCsvSampled(text, name, opts) }),
   },

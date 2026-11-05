@@ -375,3 +375,141 @@ test('EXAMPLE_LAYERS line lists', () => {
   assert.equal(n(neb, 'peaks'), 10);
   assert.equal(n(neb, 'dips'), 0);
 });
+
+// ---- Fix round 1: sampled-vs-lines guard (R23) ----
+const bareRows = (header, xs, sep = ',') => header + '\n' + xs.map((x, i) => x + sep + (1 + (i % 7))).join('\n');
+const uniform = n => Array.from({ length: n }, (_, i) => 400 + i * 2);
+
+test('R23: 500 uniform wavelength,intensity rows are a sampled spectrum, not 500 lines', () => {
+  for (const h of ['wavelength,intensity', 'wavelength,strength', 'wavelength,amplitude', 'wavelength,height']) {
+    const r = parseAny(bareRows(h, uniform(500)), 'dense');
+    assert.equal(r.layer.kind, 'sampled', h);
+    assert.equal(r.layer.x.length, 500);
+    assert.ok(isWellFormedLayer(r.layer));
+    assert.equal(r.layer.y[1], 2);
+  }
+});
+
+test('R23: few or irregular rows stay a line list', () => {
+  assert.equal(parseAny(bareRows('wavelength,intensity', [500, 510, 650, 700, 720]), 'n').layer.kind, 'lines');
+  assert.equal(parseAny('wavelength,intensity\n500,1\n600,2', 'n').layer.kind, 'lines');
+  assert.equal(parseAny(bareRows('wavelength,intensity', uniform(63)), 'n').layer.kind, 'lines');
+  assert.equal(parseAny(bareRows('wavelength,intensity', uniform(64)), 'n').layer.kind, 'sampled');
+  // 100 rows, irregular: gap ratio > 5
+  const irr = Array.from({ length: 100 }, (_, i) => 400 + i + (i === 99 ? 300 : 0));
+  assert.equal(parseAny(bareRows('wavelength,intensity', irr), 'n').layer.kind, 'lines');
+  const geometric = Array.from({ length: 100 }, (_, i) => 400 * Math.pow(1.05, i));
+  assert.equal(parseAny(bareRows('wavelength,intensity', geometric), 'n').layer.kind, 'lines');
+});
+
+test('R23: extra width/label/type columns always mean a line list', () => {
+  const xs = uniform(100);
+  const withLabel = 'wavelength,intensity,label\n' + xs.map(x => `${x},1,L`).join('\n');
+  assert.equal(parseAny(withLabel, 'n').layer.kind, 'lines');
+  const withWidth = 'wavelength,intensity,width\n' + xs.map(x => `${x},1,0.5`).join('\n');
+  assert.equal(parseAny(withWidth, 'n').layer.kind, 'lines');
+});
+
+test('R23: direct parseLineList is never redirected', () => {
+  const { layer } = parseLineList(bareRows('wavelength,intensity', uniform(500)), 'dense');
+  assert.equal(layer.kind, 'lines');
+  assert.equal(layer.lines.length, 500);
+});
+
+test('R23: parseCsvSampled accepts strength/amplitude/height as the y column', () => {
+  const txt = 'wavelength,junk,strength\n' + uniform(20).map(x => `${x},99,${x / 1000}`).join('\n');
+  assert.equal(parseCsvSampled(txt, 'n').y[0], 0.4);
+});
+
+// ---- Fix round 1: comment markers only before the header ----
+test('markers after the header are data, not comments (semicolon file with empty position is counted)', () => {
+  const txt = 'wavelength;intensity;label\n500;1;A\n;2;B\n600;3;C';
+  const { layer, skipped } = parseLineList(txt, 'n');
+  assert.deepEqual(layer.lines.map(l => l.x), [500, 600]);
+  assert.equal(skipped.count, 1);
+  assert.match(skipped.reasons[0], /^row 3: .*position/);
+  // '%', '#', '//' leading data rows are counted as skipped too
+  const t2 = 'wavelength,intensity\n500,1\n# 7,2\n% 8,2\n// 9,2\n600,1';
+  const r2 = parseLineList(t2, 'n');
+  assert.equal(r2.layer.lines.length, 2);
+  assert.equal(r2.skipped.count, 3);
+  assert.deepEqual(r2.skipped.reasons.map(r => +r.match(/^row (\d+):/)[1]), [3, 4, 5]);
+});
+
+test('comments before the header are still ignored', () => {
+  const { layer, skipped } = parseLineList('# note\n// note\n% note\n; note\nwavelength,intensity\n500,1\n600,1', 'n');
+  assert.equal(layer.lines.length, 2);
+  assert.equal(skipped.count, 0);
+});
+
+// ---- Fix round 1: header written as a comment ----
+test('a commented header line is used as the header', () => {
+  for (const [mark, sep, row] of [['# ', ',', 'wavelength,intensity,width'], ['#', ' ', 'wavelength intensity width'],
+    ['// ', ',', 'wavelength,intensity,width'], ['% ', '\t', 'wavelength\tintensity\twidth'], ['; ', ',', 'wavelength,intensity,width']]) {
+    const txt = `${mark}${row}\n500${sep}1${sep}0.5\n600${sep}2${sep}0.6\n`;
+    const { layer, skipped } = parseLineList(txt, 'c');
+    assert.equal(layer.lines.length, 2, JSON.stringify(mark + row));
+    assert.equal(layer.lines[0].width, 0.5);
+    assert.equal(skipped.count, 0);
+    assert.equal(parseAny(txt, 'c').layer.kind, 'lines');
+  }
+});
+
+test('a commented header must be the first content and name position and intensity', () => {
+  // a generic comment first, then the real header
+  assert.equal(parseLineList('# produced by tool\n# wavelength,intensity\nwavelength,intensity\n500,1', 'c').layer.lines.length, 1);
+  // not a header: ordinary prose comment, then no header at all -> clear error
+  assert.throws(() => parseLineList('# some notes\n500,1\n600,2', 'c'), /header/i);
+  // commented header only mentions position
+  assert.throws(() => parseLineList('# wavelength,notes\n500,1', 'c'), /header/i);
+});
+
+test('commented header works for sampled CSV through parseAny', () => {
+  const txt = '# wavelength,flux\n' + uniform(20).map(x => `${x},0.5`).join('\n');
+  const r = parseAny(txt, 'c');
+  assert.equal(r.layer.kind, 'sampled');
+  assert.equal(r.layer.x.length, 20);
+});
+
+// ---- Fix round 1: BOM, CRLF, quoting, scale ----
+test('UTF-8 BOM before the header (CSV and tab)', () => {
+  for (const sep of [',', '\t']) {
+    const txt = '﻿' + ['wavelength', 'intensity', 'label'].join(sep) + '\n' + ['500', '1', 'A'].join(sep) + '\n';
+    const { layer } = parseLineList(txt, 'b');
+    assert.equal(layer.lines.length, 1, JSON.stringify(sep));
+    assert.equal(layer.lines[0].label, 'A');
+    assert.equal(parseAny(txt, 'b').layer.kind, 'lines');
+  }
+  const bomComment = '﻿# wavelength,intensity\n500,1\n';
+  assert.equal(parseLineList(bomComment, 'b').layer.lines.length, 1);
+  const bomSampled = '﻿wavelength,flux\n' + uniform(20).map(x => `${x},1`).join('\n');
+  assert.equal(parseAny(bomSampled, 'b').layer.x.length, 20);
+});
+
+test('CRLF line endings, including row numbers in reasons', () => {
+  const txt = 'wavelength,intensity,label\r\n500,1,A\r\nzzz,1,B\r\n600,2,C\r\n';
+  const { layer, skipped } = parseLineList(txt, 'crlf');
+  assert.deepEqual(layer.lines.map(l => l.label), ['A', 'C']);
+  assert.match(skipped.reasons[0], /^row 3:/);
+});
+
+test('quoted fields may contain delimiters', () => {
+  const txt = 'wavelength,intensity,label\n588.995,1,"Na I, D2"\n589.592,0.8,"Say ""hi"", ok"\n';
+  const { layer } = parseLineList(txt, 'q');
+  assert.equal(layer.lines[0].label, 'Na I, D2');
+  assert.equal(layer.lines[1].label, 'Say "hi", ok');
+  const tab = 'wavelength\tintensity\tlabel\n588.995\t1\t"Na I\tD2"\n';
+  assert.equal(parseLineList(tab, 'q').layer.lines[0].label, 'Na I\tD2');
+});
+
+test('a 100k-row line list parses in well under 2 s', () => {
+  const rows = new Array(100000);
+  for (let i = 0; i < rows.length; i++) rows[i] = `${400 + i * 0.003},${1 + (i % 5)},0.01,L${i},em`;
+  const txt = 'wavelength,intensity,width,label,type\n' + rows.join('\n');
+  const t0 = Date.now();
+  const { layer } = parseAny(txt, 'big');
+  const dt = Date.now() - t0;
+  assert.equal(layer.kind, 'lines');
+  assert.equal(layer.lines.length, 100000);
+  assert.ok(dt < 2000, `took ${dt} ms`); // generous bound: typically well under 500 ms
+});
