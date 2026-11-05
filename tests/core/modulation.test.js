@@ -214,3 +214,87 @@ test('eventRoutes: CC unipolar gain, floor at 0, other-channel env allowed, bad 
   const e = st.mods.ch3.env[1];
   assert.deepEqual([er.envRoutes[0].a, er.envRoutes[0].h, er.envRoutes[0].d], [e.a, e.h, e.d]);
 });
+
+test('loop mode N>1: seamless for all shapes; steps/drift really vary within the loop', () => {
+  const times = [0, 0.31, 1.7, 3.05, 4.4, 6.66, 8.1, 9.93];
+  for (const hz of [0.37, 0.83]) { // N = 4 and 8 over 10 s
+    for (const shape of LFO_SHAPES) {
+      const lfo = lfoOf(shape, { rate: { mode: 'hz', value: hz }, phase: 0.21, seed: 1234 });
+      for (const s of times) {
+        near(lfoValue(lfo, T(s), 120, 10), lfoValue(lfo, T(s + 10), 120, 10), 1e-9, `${shape} ${hz}Hz @${s}`);
+        near(lfoValue(lfo, T(s), 120, 10), lfoValue(lfo, T(s + 30), 120, 10), 1e-9, `${shape} ${hz}Hz @${s}+30`);
+      }
+      if (shape === 'steps' || shape === 'drift') {
+        const distinct = new Set();
+        for (let s = 0; s < 10; s += 0.25) distinct.add(lfoValue(lfo, T(s), 120, 10).toFixed(9));
+        assert.ok(distinct.size >= 3, `${shape} ${hz}Hz varies (got ${distinct.size})`);
+      }
+    }
+  }
+});
+
+test('loop mode, beats rate: seamless at 120 bpm over 8 s for 1/4 and non-power-of-two 1/8d', () => {
+  for (const div of ['1/4', '1/8d']) {
+    for (const shape of LFO_SHAPES) {
+      const lfo = lfoOf(shape, { rate: { mode: 'beats', div }, phase: 0.1, seed: 9 });
+      const at = s => ({ beat: s * 2, sec: s }); // 120 bpm: 2 beats per second
+      const distinct = new Set();
+      for (const s of [0, 0.4, 1.3, 2.9, 5.5, 7.9]) {
+        near(lfoValue(lfo, at(s), 120, 8), lfoValue(lfo, at(s + 8), 120, 8), 1e-9, `${shape} ${div} @${s}`);
+      }
+      if (shape === 'steps' || shape === 'drift') {
+        for (let s = 0; s < 8; s += 0.2) distinct.add(lfoValue(lfo, at(s), 120, 8).toFixed(9));
+        assert.ok(distinct.size >= 3, `${shape} ${div} varies`);
+      }
+    }
+  }
+});
+
+test('evaluate: clamp is applied once after summing, not per route', () => {
+  const st = createState();
+  st.params['ch1.filter.center'] = 0.5;
+  st.mods.g.lfo[0] = lfoOf('square', { rate: { mode: 'hz', value: 1 } }); // +1 at t=0
+  st.mods.g.lfo[1] = lfoOf('square', { rate: { mode: 'hz', value: 1 }, phase: 0.5 }); // -1 at t=0
+  st.matrix = [
+    { src: 'g.lfo1', dst: 'ch1.filter.center', amount: 1 },   // +0.5 (bipolar half-range)
+    { src: 'g.lfo1', dst: 'ch1.filter.center', amount: 1 },   // +0.5 (duplicate source, kept as given)
+    { src: 'g.lfo2', dst: 'ch1.filter.center', amount: 1 },   // -0.5
+    { src: 'g.lfo2', dst: 'ch1.filter.center', amount: 1 },   // -0.5
+  ];
+  near(evaluate(st, T(0), OPTS)['ch1.filter.center'], 0.5, 1e-12);
+  // +1.0 then -1.0 around base 0.5 would clip to [0,1] per route if clamped early
+  st.matrix = [
+    { src: 'g.lfo1', dst: 'ch1.filter.center', amount: 1 },
+    { src: 'g.lfo1', dst: 'ch1.filter.center', amount: 1 },
+    { src: 'g.lfo2', dst: 'ch1.filter.center', amount: 1 },
+    { src: 'g.lfo2', dst: 'ch1.filter.center', amount: 1 },
+    { src: 'g.lfo1', dst: 'ch1.filter.center', amount: 0.8 },
+    { src: 'g.lfo2', dst: 'ch1.filter.center', amount: 0.8 },
+  ];
+  near(evaluate(st, T(0), OPTS)['ch1.filter.center'], 0.5, 1e-12);
+});
+
+test('evaluate returns copies of object-typed params; mutating them does not corrupt state', () => {
+  const st = createState();
+  const id = Object.keys(st.params).find(k => paramDef(k).type === 'time');
+  const before = JSON.stringify(st.params[id]);
+  const out = evaluate(st, T(0), OPTS);
+  assert.notEqual(out[id], st.params[id]);
+  assert.deepEqual(out[id], st.params[id]);
+  out[id].div = '1/2';
+  out[id].extra = 1;
+  assert.equal(JSON.stringify(st.params[id]), before);
+});
+
+test('eventRoutes clamps route amount to [-1,1]', () => {
+  const st = createState();
+  st.matrix = [
+    { src: 'g.cc1', dst: 'ch1.event.level', amount: 5 },
+    { src: 'ch1.env1', dst: 'ch1.event.level', amount: -7 },
+  ];
+  const er = eventRoutes(st, 0, T(0), { bpm: 120, triggers: {}, cc: { 'g.cc1': 0 } });
+  assert.equal(er.staticGain, 0); // 1 + 1*(0-1), not 1 + 5*(0-1) floored (same) -- and amount reported clamped
+  assert.equal(er.envRoutes[0].amount, -1);
+  const er2 = eventRoutes(st, 0, T(0), { bpm: 120, triggers: {}, cc: { 'g.cc1': 0.5 } });
+  near(er2.staticGain, 0.5, 1e-12); // unclamped amount 5 would floor to 0
+});

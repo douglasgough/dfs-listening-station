@@ -124,7 +124,10 @@ const isRoute = r => r !== null && typeof r === 'object' && Number.isFinite(r.am
  */
 export function evaluate(state, t, opts = {}) {
   const out = {};
-  for (const id of allParamIds()) out[id] = state.params[id];
+  for (const id of allParamIds()) {
+    const v = state.params[id];
+    out[id] = v !== null && typeof v === 'object' ? structuredClone(v) : v;
+  }
 
   const add = {};
   const cache = new Map();
@@ -165,21 +168,25 @@ export function eventRoutes(state, ch, t, opts = {}) {
     if (!isRoute(r) || r.dst !== dst) continue;
     const rs = resolveSource(state, r.src);
     if (!rs) continue;
+    const amount = clamp(r.amount, -1, 1);
     if (rs.kind === 'env') {
-      envRoutes.push({ a: rs.item.a, h: rs.item.h, d: rs.item.d, amount: r.amount });
+      envRoutes.push({ a: rs.item.a, h: rs.item.h, d: rs.item.d, amount });
       continue;
     }
     const v = sourceValue(state, rs, t, opts);
     if (!Number.isFinite(v)) continue;
-    staticGain *= Math.max(0, 1 + r.amount * (rs.kind === 'lfo' ? v : v - 1));
+    staticGain *= Math.max(0, 1 + amount * (rs.kind === 'lfo' ? v : v - 1));
   }
   return { envRoutes, staticGain };
 }
 
 /**
- * Gain multiplier for one event of channel `ch` that started ageSec ago. Each
- * event is independent because only its own age is used. With no envelope route
- * this is just the static gain. LFO / CC routes are read at opts.t (default 0).
+ * REFERENCE evaluator of the gain multiplier for one event of channel `ch` that
+ * started ageSec ago. Each event is independent because only its own age is used.
+ * With no envelope route this is just the static gain. LFO / CC (staticGain) routes
+ * are read at opts.t (default {beat:0, sec:0}). A scheduler should call
+ * eventRoutes once at an event's trigger time and reuse its staticGain, evaluating
+ * only the envelope terms as the event ages, rather than calling voiceGain per sample.
  */
 export function voiceGain(state, ch, ageSec, opts = {}) {
   const t = opts.t || { beat: 0, sec: 0 };
