@@ -333,20 +333,21 @@ export function createStage(host, { store, app } = {}) {
   };
   const curWin = c => { const v = chView(c); return { centre: v['filter.center'], width: v['filter.width'] }; };
 
+  const offMsg = ch => { live.textContent = `Channel ${ch + 1} is off. Enable it in its Filter section to move its window.`; };
   on(plot, 'pointerdown', ev => {
-    if (!hasLayers() || ev.button > 0) return;
+    if (!hasLayers() || ev.button > 0 || dragState) return; // a second pointer is ignored while a drag is active
     plot.focus({ preventScroll: true });
     try { plot.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointer ids have nothing to capture */ }
     const R = plotR(), u = plotU(ev), hit = hitWindow(u, windows(), EDGE_TOL, R);
     if (hit) {
       app.select(hit.channel);
-      dragState = { ch: hit.channel, mode: hit.mode, u0: u, start: curWin(hit.channel) };
+      dragState = { id: ev.pointerId, ch: hit.channel, mode: hit.mode, u0: u, start: curWin(hit.channel) };
     } else {
       const ch = app.selected, start = curWin(ch);
+      if (!chView(ch)['filter.on']) { offMsg(ch); return; } // R35: a click never silently switches a channel on
       const centre = clamp(u, start.width / 2, 1 - start.width / 2);
-      if (!chView(ch)['filter.on']) store.set(pid(ch, 'filter.on'), true);
       store.set(pid(ch, 'filter.center'), start.width >= 1 ? 0.5 : centre);
-      dragState = { ch, mode: 'move', u0: u, start: curWin(ch) };
+      dragState = { id: ev.pointerId, ch, mode: 'move', u0: u, start: curWin(ch) };
     }
     describe();
   });
@@ -354,6 +355,7 @@ export function createStage(host, { store, app } = {}) {
     if (!hasLayers()) return;
     const b = plot.getBoundingClientRect(), px = ev.clientX - b.left, py = ev.clientY - b.top, u = plotU(ev);
     hover = { u, x: px, y: py, line: dragState ? null : lineAt(px, py) };
+    if (dragState && ev.pointerId !== dragState.id) return;
     if (dragState) {
       const r = dragWindow(dragState.start, dragState.mode, u - dragState.u0);
       writeWin(dragState.ch, r.centre, r.width);
@@ -364,15 +366,18 @@ export function createStage(host, { store, app } = {}) {
     }
     updateReadout(); markPlot();
   });
-  const endDrag = () => { if (dragState) { dragState = null; flushPending(); describe(); } };
+  const endDrag = ev => { if (dragState && (!ev || ev.pointerId === undefined || ev.pointerId === dragState.id)) { dragState = null; flushPending(); describe(); } };
   on(plot, 'pointerup', endDrag);
   on(plot, 'pointercancel', endDrag);
+  on(plot, 'lostpointercapture', endDrag);
   on(plot, 'pointerleave', () => { if (!dragState) { hover = null; updateReadout(); markPlot(); } });
   on(plot, 'wheel', ev => {
     if (!hasLayers()) return;
     ev.preventDefault();
     const ch = app.selected, v = curWin(ch);
-    store.set(pid(ch, 'filter.width'), wheelWidth(v.width, ev.deltaY));
+    if (!chView(ch)['filter.on']) { offMsg(ch); return; }
+    const dy = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaMode === 2 ? ev.deltaY * 100 : ev.deltaY; // lines / pages / pixels
+    store.set(pid(ch, 'filter.width'), wheelWidth(v.width, dy));
     describe();
   }, { passive: false });
   on(plot, 'keydown', ev => {
@@ -382,6 +387,7 @@ export function createStage(host, { store, app } = {}) {
     if (!step) return;
     ev.preventDefault();
     const ch = app.selected, v = curWin(ch);
+    if (!chView(ch)['filter.on']) { offMsg(ch); return; }
     if (step.dCentre) store.set(pid(ch, 'filter.center'), clamp(v.centre + step.dCentre, 0, 1));
     if (step.widthFactor !== 1) store.set(pid(ch, 'filter.width'), clamp(v.width * step.widthFactor, MIN_WIDTH, 1));
     describe();
@@ -442,14 +448,14 @@ export function createStage(host, { store, app } = {}) {
     app.zoomTo(fullX(rs.a), fullX(rs.b));
   };
   on(rng, 'pointerdown', ev => {
-    if (!hasLayers()) return;
+    if (!hasLayers() || rsDrag) return;
     try { rng.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointer ids have nothing to capture */ }
     rng.focus({ preventScroll: true });
     const u = rngU(ev), px = rngTol();
-    if (Math.abs(u - rs.a) < px) rsDrag = { m: 'a' };
-    else if (Math.abs(u - rs.b) < px) rsDrag = { m: 'b' };
-    else if (u > rs.a && u < rs.b && rs.b - rs.a < 0.995) rsDrag = { m: 'move', off: u - rs.a, w: rs.b - rs.a };
-    else { rsDrag = { m: 'new', u0: u }; rs = { a: Math.min(u, 0.98), b: Math.min(1, u + 0.02) }; }
+    if (Math.abs(u - rs.a) < px) rsDrag = { id: ev.pointerId, m: 'a' };
+    else if (Math.abs(u - rs.b) < px) rsDrag = { id: ev.pointerId, m: 'b' };
+    else if (u > rs.a && u < rs.b && rs.b - rs.a < 0.995) rsDrag = { id: ev.pointerId, m: 'move', off: u - rs.a, w: rs.b - rs.a };
+    else { rsDrag = { id: ev.pointerId, m: 'new', u0: u }; rs = { a: Math.min(u, 0.98), b: Math.min(1, u + 0.02) }; }
     markRng();
   });
   on(rng, 'pointermove', ev => {
@@ -460,14 +466,15 @@ export function createStage(host, { store, app } = {}) {
       rng.style.cursor = (Math.abs(u - rs.a) < px || Math.abs(u - rs.b) < px) ? 'ew-resize' : (u > rs.a && u < rs.b && rs.b - rs.a < 0.995) ? 'grab' : 'crosshair';
       return;
     }
+    if (ev.pointerId !== rsDrag.id) return;
     if (rsDrag.m === 'a') rs.a = clamp(u, 0, rs.b - 0.02);
     else if (rsDrag.m === 'b') rs.b = clamp(u, rs.a + 0.02, 1);
     else if (rsDrag.m === 'move') { const a = clamp(u - rsDrag.off, 0, 1 - rsDrag.w); rs = { a, b: a + rsDrag.w }; }
     else { const a = Math.min(rsDrag.u0, u); let b = Math.max(rsDrag.u0, u, a + 0.02); let a2 = a; if (b > 1) { b = 1; a2 = Math.min(a, 0.98); } rs = { a: a2, b }; }
     markRng();
   });
-  const endRng = () => { rsDrag = null; };
-  on(rng, 'pointerup', endRng); on(rng, 'pointercancel', endRng);
+  const endRng = ev => { if (rsDrag && (!ev || ev.pointerId === undefined || ev.pointerId === rsDrag.id)) rsDrag = null; };
+  on(rng, 'pointerup', endRng); on(rng, 'pointercancel', endRng); on(rng, 'lostpointercapture', endRng);
   on(rng, 'dblclick', () => { rs = { a: 0, b: 1 }; markRng(); });
   on(rng, 'keydown', ev => {
     if (!hasLayers()) return;
