@@ -55,6 +55,22 @@ function mapperFor(layer, stage) {
   return v => convertPosition(v, from, stage.unit);
 }
 
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+
+/** Stage-independent structural check: known kind, valid axis, and well-typed x/y or lines. */
+export function isWellFormedLayer(layer) {
+  if (!layer || typeof layer !== 'object') return false;
+  const ax = layer.axis;
+  if (!ax || typeof ax !== 'object' || typeof ax.unit !== 'string' || !UNITS.includes(ax.unit)) return false;
+  if (!isNum(ax.x0) || !isNum(ax.x1) || !(ax.x0 < ax.x1)) return false;
+  if (layer.kind === 'sampled') {
+    return Array.isArray(layer.x) && Array.isArray(layer.y) && layer.x.length === layer.y.length && layer.x.length >= 2
+      && layer.x.every(isNum) && layer.y.every(isNum);
+  }
+  if (layer.kind === 'lines') return Array.isArray(layer.lines);
+  return false;
+}
+
 const stageOk = s => s && Number.isFinite(s.x0) && Number.isFinite(s.x1) && s.x1 > s.x0;
 
 function meta(layer, stage, extra) {
@@ -74,7 +90,7 @@ function interpAt(xs, ys, e) {
 
 /** Layer expressed in the stage's unit, sorted ascending, clipped to [stage.x0, stage.x1]; null if no overlap/unconvertible. */
 export function layerOnStage(layer, stage) {
-  if (!layer || !stageOk(stage)) return null;
+  if (!isWellFormedLayer(layer) || !stageOk(stage)) return null;
   const f = mapperFor(layer, stage);
   if (!f) return null;
 

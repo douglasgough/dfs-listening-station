@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { analyse, applyShift, createAnalysisCache } from '../../src/spectrum/analyse.js';
+import { analyse, analyseSampled, applyShift, createAnalysisCache } from '../../src/spectrum/analyse.js';
+import { layerOnStage } from '../../src/spectrum/layers.js';
 import { EXAMPLE_LINES, decodeExample } from '../../src/spectrum/examples.js';
 
 const golden = JSON.parse(readFileSync(new URL('../fixtures/prototype-golden.json', import.meta.url), 'utf8'));
@@ -28,6 +29,17 @@ for (const line of EXAMPLE_LINES) {
     });
   });
 }
+
+test('analyse sampled/hull r, d, dmax equal analyseSampled (Allende)', () => {
+  const sp = decodeExample(EXAMPLE_LINES[0]);
+  const stage = { unit: 'nm', x0: sp.x0, x1: sp.x1 };
+  const got = analyse(sampled('Allende', sp.x, sp.y), stage, { polarity: 'dips', sens: 0.2 });
+  const ref = analyseSampled(sp, { polarity: 'dips', sens: 0.2 });
+  assert.deepEqual(Array.from(got.r), Array.from(ref.r));
+  assert.deepEqual(Array.from(got.d), Array.from(ref.d));
+  assert.deepEqual(Array.from(got.gx), Array.from(ref.gx));
+  assert.equal(got.dmax, ref.dmax);
+});
 
 test('analyse returns the documented shape and honours M', () => {
   const sp = decodeExample(EXAMPLE_LINES[0]);
@@ -186,7 +198,42 @@ test('RF1: dips on purely-emission lines, and unusable stage/layer', () => {
   assert.equal(a.dmax, 1e-6);
   assert.doesNotThrow(() => analyse(L, { unit: 'nm', x0: 5, x1: 5 }, { polarity: 'both', sens: 0.2 }));
   assert.doesNotThrow(() => analyse(null, NM, { polarity: 'both', sens: 0.2 }));
-  assert.doesNotThrow(() => analyse({ id: 'q', kind: 'weird', axis: NM }, NM, { polarity: 'both', sens: 0.2 }));
+});
+
+test('malformed layers: layerOnStage null and analyse returns the empty analysis', () => {
+  const x = [400, 500, 600, 700], y = [1, 2, 3, 4];
+  const ok = { id: 'm', name: 'm', kind: 'sampled', quantity: 'flux', axis: NM, x, y };
+  assert.ok(layerOnStage(ok, NM));
+  const bad = {
+    'no axis': { ...ok, axis: undefined },
+    'no x': { ...ok, x: undefined },
+    'no y': { ...ok, y: undefined },
+    'weird kind': { ...ok, kind: 'weird' },
+    'y shorter than x': { ...ok, y: [1, 2, 3] },
+    'one point': { ...ok, x: [500], y: [1] },
+    'string x': { ...ok, x: ['a', 'b', 'c', 'd'] },
+    'NaN y': { ...ok, y: [1, NaN, 3, 4] },
+    'lines not an array': { id: 'l', kind: 'lines', quantity: 'intensity', axis: NM, lines: 'nope' },
+    'lines missing': { id: 'l', kind: 'lines', quantity: 'intensity', axis: NM },
+    'unit not in UNITS': { ...ok, axis: { unit: 'parsec', x0: 400, x1: 800 } },
+    'NaN x0': { ...ok, axis: { unit: 'nm', x0: NaN, x1: 800 } },
+    'x0 == x1': { ...ok, axis: { unit: 'nm', x0: 500, x1: 500 } },
+    'x0 > x1': { ...ok, axis: { unit: 'nm', x0: 800, x1: 400 } },
+  };
+  for (const [name, L] of Object.entries(bad)) {
+    assert.equal(layerOnStage(L, NM), null, name);
+    for (const mode of ['hull', 'direct']) {
+      const a = analyse(L, NM, { polarity: 'both', sens: 0.2, mode });
+      assertEmptyish(a);
+      assert.equal(a.dmax, 1e-6, name);
+      assert.ok(a.r.every(v => v === 0) && a.d.every(v => v === 0), name);
+    }
+  }
+});
+
+test('analyse does not swallow genuine exceptions', () => {
+  const stage = { unit: 'nm', x1: 800, get x0() { throw new TypeError('boom'); } };
+  assert.throws(() => analyse(linesLayer([{ x: 500, intensity: 1 }]), stage, { polarity: 'both', sens: 0.2 }), /boom/);
 });
 
 // --- Task 2 review carry-over: value-checked polarity paths ---
@@ -198,14 +245,19 @@ function synth(n = 600) {
   });
   return sampled('syn', x, y, NM);
 }
+const strongest = bands => bands.reduce((p, q) => (q.depth > p.depth ? q : p));
 const near = (bands, u, tol) => bands.some(b => Math.abs(b.u - u) <= tol);
 
 test('synthetic dip+peak: dips finds the dip only', () => {
   const b = analyse(synth(), NM, { polarity: 'dips', sens: 0.2 }).bands;
+  assert.ok(Math.abs(strongest(b).u - 0.3) <= 0.01);
   assert.ok(near(b, 0.3, 0.02)); assert.ok(!near(b, 0.7, 0.02));
 });
 test('synthetic dip+peak: peaks finds the peak only', () => {
   const b = analyse(synth(), NM, { polarity: 'peaks', sens: 0.2 }).bands;
+  // the hull algorithm also reports shoulder bands beside the dip, so the peak is checked by position, not strength
+  assert.ok(near(b, 0.7, 0.01));
+  assert.ok(Math.abs(b.reduce((p, q) => (Math.abs(q.u - 0.7) < Math.abs(p.u - 0.7) ? q : p)).u - 0.7) <= 0.01);
   assert.ok(near(b, 0.7, 0.02)); assert.ok(!near(b, 0.3, 0.02));
 });
 test('synthetic dip+peak: both finds both', () => {
@@ -270,13 +322,35 @@ test('applyShift: unitless x axis shifts u by beta', () => {
   assert.ok(Math.abs(s.bands[0].u - 0.6) < 1e-9);
 });
 
-test('applyShift: bands pushed out of range are dropped; edges clamp', () => {
+test('applyShift: bands pushed out of range are dropped', () => {
   const a = analyse(linesLayer([{ x: 790, intensity: 1 }, { x: 500, intensity: 1 }]), NM, { polarity: 'both', sens: 0.2 });
   const s = applyShift(a, C / 10, NM);
   assert.equal(s.bands.length, 1);
   assert.ok(Math.abs(s.bands[0].u - (550 - 400) / 400) < 1e-9);
   assert.ok(allFinite(s));
+});
+
+test('applyShift: r and d are resampled by the inverse mapping and clamp at the edges', () => {
+  // ramp with non-zero values at both stage edges
+  const x = Array.from({ length: 201 }, (_, i) => 400 + i * 2), y = x.map(v => 0.2 + 0.3 * (v - 400) / 400);
+  const a = analyse(sampled('ramp', x, y, NM, 'optical-depth'), NM, { polarity: 'dips', sens: 0.2, mode: 'direct' });
+  assert.ok(a.d[0] > 0.1 && a.d[511] > 0.4);
+  const beta = 0.05, s = applyShift(a, C * beta, NM);
+  const M = 512;
+  // left edge: source position falls below the grid -> clamped to the first value
   assert.equal(s.d[0], a.d[0]);
+  assert.equal(s.r[0], a.r[0]);
+  // interior: value at cell u comes from u_src = ((400 + 400u) / (1 + beta) - 400) / 400 (linear ramp, away from smoothing edges)
+  for (const i of [100, 256, 400, 511]) {
+    const u = i / (M - 1), us = ((400 + 400 * u) / (1 + beta) - 400) / 400;
+    const exp = 0.2 + 0.3 * us;
+    assert.ok(Math.abs(s.d[i] - exp) < 2e-3, `d[${i}] ${s.d[i]} vs ${exp}`);
+    assert.ok(Math.abs(s.r[i] - (1 - exp / a.dmax)) < 4e-3, `r[${i}]`);
+  }
+  // negative velocity: right edge clamps to the last value
+  const n = applyShift(a, -C * beta, NM);
+  assert.equal(n.d[M - 1], a.d[M - 1]);
+  assert.equal(n.r[M - 1], a.r[M - 1]);
 });
 
 test('applyShift: non-positive x0 on a multiplicative axis stays finite', () => {
@@ -303,4 +377,31 @@ test('analysis cache memoises by layer identity and parameters', () => {
   const b = cache.get(L, NM, o);
   assert.notEqual(b, a);
   assert.equal(cache.get(L, NM, o), b);
+});
+
+test('cache: different M gives a different object; null layer does not throw', () => {
+  const cache = createAnalysisCache();
+  const L = linesLayer([{ x: 600, intensity: 1 }]);
+  const o = { polarity: 'both', sens: 0.2, mode: 'hull' };
+  const a512 = cache.get(L, NM, { ...o, M: 512 }), a256 = cache.get(L, NM, { ...o, M: 256 });
+  assert.notEqual(a512, a256);
+  assert.equal(a256.d.length, 256);
+  assert.equal(cache.get(L, NM, { ...o, M: 256 }), a256);
+  assert.equal(cache.get(L, NM, o), a512); // default M is 512
+  for (const bad of [null, undefined, 5, 'x']) {
+    let a;
+    assert.doesNotThrow(() => { a = cache.get(bad, NM, o); });
+    assertEmptyish(a);
+  }
+});
+
+test('cache: per-layer entries are capped (oldest evicted first)', () => {
+  const cache = createAnalysisCache();
+  const L = linesLayer([{ x: 600, intensity: 1 }]);
+  const o = { polarity: 'both', mode: 'hull' };
+  const first = cache.get(L, NM, { ...o, sens: 0 });
+  for (let i = 1; i <= 32; i++) cache.get(L, NM, { ...o, sens: i / 100 });
+  assert.notEqual(cache.get(L, NM, { ...o, sens: 0 }), first); // evicted
+  const last = cache.get(L, NM, { ...o, sens: 0.32 });
+  assert.equal(cache.get(L, NM, { ...o, sens: 0.32 }), last); // recent entries survive
 });

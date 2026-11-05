@@ -101,8 +101,7 @@ function finishDirect(d, polarity, gx) {
  *   Band = {u, depth, fwhmU, rel, label?}. Unusable input yields an all-zero analysis (dmax 1e-6, no bands).
  */
 export function analyse(layer, stage, { polarity, sens, mode = 'hull', M = 512 } = {}) {
-  let lay = null;
-  try { lay = layerOnStage(layer, stage); } catch { lay = null; } // malformed layers degrade to empty, never throw
+  const lay = layerOnStage(layer, stage); // null for malformed layers / unusable stages; real exceptions propagate
   if (!lay) return emptyAnalysis(stage && Number.isFinite(stage.x0) && Number.isFinite(stage.x1) ? stage : { x0: 0, x1: 1 }, M);
   const span = stage.x1 - stage.x0;
 
@@ -191,19 +190,28 @@ export function applyShift(analysis, kmS, stage) {
   return { r, d, dmax: analysis.dmax, bands, gx: analysis.gx };
 }
 
+const CACHE_PER_LAYER = 32;
+
 /**
  * Memoise analyse() by layer object identity plus stage/polarity/sens/mode/M.
- * A different layer object (even with the same id) is a miss; callers replace layer objects on edit.
+ * Layers are treated as immutable: mutating one in place yields stale results, so replace the object on edit.
+ * A different layer object (even with the same id) is a miss. Each layer keeps at most CACHE_PER_LAYER
+ * entries (oldest evicted first). A null/non-object layer bypasses the cache.
  */
 export function createAnalysisCache() {
   let byLayer = new WeakMap();
   return {
     get(layer, stage, { polarity, sens, mode = 'hull', M = 512 } = {}) {
       const key = [stage.unit, stage.x0, stage.x1, polarity, sens, mode, M].join('|');
+      if (!layer || typeof layer !== 'object') return analyse(layer, stage, { polarity, sens, mode, M });
       let m = byLayer.get(layer);
       if (!m) { m = new Map(); byLayer.set(layer, m); }
       let a = m.get(key);
-      if (!a) { a = analyse(layer, stage, { polarity, sens, mode, M }); m.set(key, a); }
+      if (!a) {
+        a = analyse(layer, stage, { polarity, sens, mode, M });
+        if (m.size >= CACHE_PER_LAYER) m.delete(m.keys().next().value);
+        m.set(key, a);
+      }
       return a;
     },
     clear() { byLayer = new WeakMap(); },
