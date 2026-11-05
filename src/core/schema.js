@@ -157,3 +157,14 @@ export const paramDef = id => DEFS.get(id);
 export const allParamIds = () => [...IDS];
 /** Modulation destination ids, sorted (stable across calls). */
 export const modulatableIds = () => [...MOD_IDS];
+
+/**
+ * Short-key view of one channel: strips the 'chN.' prefix from a flat id->value map
+ * (state.params or evaluate() output). chIndex is 0..3. Ids of other channels and globals are ignored.
+ */
+export function channelView(values, chIndex) {
+  const prefix = `ch${chIndex + 1}.`;
+  const out = {};
+  for (const id of Object.keys(values)) if (id.startsWith(prefix)) out[id.slice(prefix.length)] = values[id];
+  return out;
+}
