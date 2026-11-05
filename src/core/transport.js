@@ -1,0 +1,135 @@
+/*
+ * Transport: the one clock everything derives from.
+ * Pure module: no DOM, no Web Audio, no performance/Date. Time is always passed in
+ * as `nowSec` (audio-context time live, virtual time offline).
+ *
+ * TimeValue = {mode:'beats', div: key of DIVISIONS} | {mode:'hz'|'sec', value: number}
+ */
+
+export const MIN_BPM = 20;
+export const MAX_BPM = 300;
+export const DEFAULT_BPM = 120;
+export const FALLBACK_PERIOD_SEC = 10;
+
+const BASE = {
+  '1/32': 0.125, '1/16': 0.25, '1/8': 0.5, '1/4': 1, '1/2': 2,
+  '1 bar': 4, '2 bars': 8, '4 bars': 16, '8 bars': 32, '16 bars': 64,
+};
+
+/** Beats per cycle. Dotted ('<x>d', x1.5) and triplet ('<x>t', x2/3) for 1/16..1/2. */
+export const DIVISIONS = (() => {
+  const d = { ...BASE };
+  for (const x of ['1/16', '1/8', '1/4', '1/2']) {
+    d[x + 'd'] = BASE[x] * 1.5;
+    d[x + 't'] = BASE[x] * 2 / 3;
+  }
+  return Object.freeze(d);
+})();
+
+const isPosFinite = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const cleanBpm = (b) => (isPosFinite(b) ? b : DEFAULT_BPM);
+const clampBpm = (b) => Math.min(MAX_BPM, Math.max(MIN_BPM, cleanBpm(b)));
+
+/** Beats per cycle for a beats-mode value, or null if unknown. */
+function beatsPerCycle(tv) {
+  return tv && Object.hasOwn(DIVISIONS, tv.div) ? DIVISIONS[tv.div] : null;
+}
+
+/** Free-mode period in seconds, or null if not a valid free value. */
+function freePeriodSec(tv) {
+  if (!tv || !isPosFinite(tv.value)) return null;
+  if (tv.mode === 'hz') return 1 / tv.value;
+  if (tv.mode === 'sec') return tv.value;
+  return null;
+}
+
+/** Period of one cycle in seconds. Invalid input yields the 10 s fallback; bad bpm is 120. */
+export function timeValuePeriodSec(tv, bpm) {
+  if (tv && tv.mode === 'beats') {
+    const beats = beatsPerCycle(tv);
+    return beats === null ? FALLBACK_PERIOD_SEC : beats * 60 / cleanBpm(bpm);
+  }
+  const p = freePeriodSec(tv);
+  return p === null ? FALLBACK_PERIOD_SEC : p;
+}
+
+/** Cycles elapsed at transport position t={beat,sec}; phase is the fractional part. */
+export function timeValueCycles(tv, t) {
+  if (tv && tv.mode === 'beats') {
+    const beats = beatsPerCycle(tv);
+    return beats === null ? t.sec / FALLBACK_PERIOD_SEC : t.beat / beats;
+  }
+  if (tv && tv.mode === 'hz' && isPosFinite(tv.value)) return t.sec * tv.value;
+  const p = freePeriodSec(tv);
+  return t.sec / (p === null ? FALLBACK_PERIOD_SEC : p);
+}
+
+export class Transport {
+  constructor({ bpm = DEFAULT_BPM } = {}) {
+    this.bpm = clampBpm(bpm);
+    this.running = false;
+    this.source = 'internal';
+    this._beat = 0;       // position at anchor time _t
+    this._sec = 0;        // transport-elapsed seconds at anchor time _t
+    this._t = 0;          // anchor time
+    this._lastNow = 0;    // latest time seen by any call
+  }
+
+  _seen(nowSec) {
+    const n = Number.isFinite(nowSec) ? nowSec : this._lastNow;
+    if (n > this._lastNow) this._lastNow = n;
+    return n;
+  }
+
+  /** Fold elapsed time since the anchor into the stored position (running only). */
+  _advance(now) {
+    if (this.running) {
+      const dt = Math.max(0, now - this._t);
+      this._beat += dt * this.bpm / 60;
+      this._sec += dt;
+    }
+    this._t = now;
+  }
+
+  start(nowSec) {
+    const now = this._seen(nowSec);
+    if (this.running) return;
+    this._t = now;
+    this.running = true;
+  }
+
+  stop(nowSec) {
+    const now = this._seen(nowSec);
+    if (!this.running) return;
+    this._advance(now);
+    this.running = false;
+  }
+
+  setBpm(b, nowSec) {
+    const now = this._seen(nowSec === undefined ? this._lastNow : nowSec);
+    this._advance(now);
+    this.bpm = clampBpm(b);
+  }
+
+  locate(beat, nowSec) {
+    const now = this._seen(nowSec);
+    const b = Number.isFinite(beat) ? beat : 0;
+    this._beat = b;
+    this._sec = b * 60 / this.bpm;
+    this._t = now;
+  }
+
+  beatAt(nowSec) {
+    const now = this._seen(nowSec);
+    return this.running ? this._beat + Math.max(0, now - this._t) * this.bpm / 60 : this._beat;
+  }
+
+  secondsAt(nowSec) {
+    const now = this._seen(nowSec);
+    return this.running ? this._sec + Math.max(0, now - this._t) : this._sec;
+  }
+
+  snapshot() {
+    return { bpm: this.bpm };
+  }
+}
