@@ -189,3 +189,36 @@ test('mapLinked is not part of the patch', async () => {
   const { serializePatch } = await import('../../src/core/state.js');
   assert.ok(!serializePatch(store.state).includes('mapLinked'));
 });
+
+test('timelineHold: defaults null, setTimelineHold notifies and bumps version', () => {
+  const { app } = make();
+  assert.deepEqual(app.timelineHold, [null, null, null, null]);
+  let n = 0; app.subscribe(() => n++);
+  const v = app.version;
+  app.setTimelineHold(1, 0.25);
+  assert.deepEqual(app.timelineHold, [null, 0.25, null, null]);
+  assert.equal(n, 1);
+  assert.equal(app.version, v + 1);
+  app.setTimelineHold(1, 0.25);
+  assert.equal(n, 1, 'no change, no notify');
+  app.setTimelineHold(1, null);
+  assert.equal(app.timelineHold[1], null);
+  assert.equal(n, 2);
+});
+
+test('timelineHold: rejects bad channel or phase', () => {
+  const { app } = make();
+  for (const c of [-1, 4, 1.5, '0']) assert.throws(() => app.setTimelineHold(c, 0.5));
+  for (const p of [NaN, -0.1, 1, 'x', Infinity]) assert.throws(() => app.setTimelineHold(0, p));
+});
+
+test('timelineHold clears when the channel timeline has no events left', () => {
+  const { app, store } = make();
+  store.setTimeline(0, { events: [{ t: 0.2, c: 0.5 }] });
+  app.setTimelineHold(0, 0.2);
+  store.setTimeline(0, { events: [] });
+  assert.equal(app.timelineHold[0], null);
+  app.setTimelineHold(2, 0.3); // never a timeline with events on ch3: stays until cleared by the UI
+  store.setTimeline(0, { mode: 'jump' });
+  assert.equal(app.timelineHold[2], 0.3);
+});

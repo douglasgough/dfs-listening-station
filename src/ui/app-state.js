@@ -29,6 +29,8 @@ export function createAppState({ store, examples = [] } = {}) {
     version: 0,
     /** UI-only: channel i's map.* follows channel 1's (never part of the patch). */
     mapLinked: Array.from({ length: NUM_CHANNELS }, () => false),
+    /** UI-only: phase a channel's timeline playhead is held at while an event is edited (null = plays normally). */
+    timelineHold: Array.from({ length: NUM_CHANNELS }, () => null),
   };
 
   const bump = () => { app.version++; for (const fn of [...subs]) fn(app); };
@@ -138,6 +140,18 @@ export function createAppState({ store, examples = [] } = {}) {
     app.mapLinked[i] = v;
     bump();
   };
+
+  app.setTimelineHold = (ch, phase) => {
+    if (!Number.isInteger(ch) || ch < 0 || ch >= NUM_CHANNELS) throw new Error(`Bad channel for timeline hold: ${String(ch)}`);
+    if (phase !== null && !(typeof phase === 'number' && phase >= 0 && phase < 1)) throw new Error('Timeline hold must be null or a phase in [0, 1)');
+    if (app.timelineHold[ch] === phase) return;
+    app.timelineHold[ch] = phase;
+    bump();
+  };
+  // A timeline with no events has nothing to hold on.
+  store.subscribe((id, v) => {
+    if (id === 'timeline' && v && app.timelineHold[v.ch] !== null && !store.state.timelines[v.ch].events.length) app.setTimelineHold(v.ch, null);
+  });
 
   app.analysisFor = c => {
     if (!app.stage) return null;
