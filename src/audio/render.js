@@ -53,6 +53,7 @@ function maxEnvLife(state) {
  * @param project {state, analyses[4], stage}
  * @param kind 'take' | 'loop'
  * @param opts {stereo, bars?, seconds?, synced?, take?, bpm?, seed?, fadeSec = 2, onProgress?}
+ * @param opts.debugCapture  also return `raw` (un-normalised, whole render) and `preSamples` (loop start index)
  * @returns {chans, peak (raw, all channels), rms (channel 0, normalised), sampleRate, lengthSec}
  */
 export async function renderOffline(project, kind, opts = {}) {
@@ -73,7 +74,8 @@ export async function renderOffline(project, kind, opts = {}) {
     tr.locate(0, PRE_ROLL_SEC);
     tr.start(PRE_ROLL_SEC);
     const beatTm = timeMap(tr, PRE_ROLL_SEC);
-    tm = Object.freeze({ ...beatTm, secAt: (t) => t }); // render-time seconds; beats grid-aligned at PRE
+    // render-time seconds (so evaluate's sec = loop time); beats grid-aligned at PRE; nowSec/sec describe that axis
+    tm = Object.freeze({ ...beatTm, nowSec: 0, sec: 0, secAt: (t) => t });
   } else {
     const keep = clamp(maxEnvLife(state), 3, 20);
     total = take.dur + keep + 1;
@@ -101,18 +103,20 @@ export async function renderOffline(project, kind, opts = {}) {
 
     const rOpts = { tm, take, loopSec: sOpts.loopSec, loopOffset: sOpts.loopOffset };
     let prev = null;
-    for (let t = 0; t < total; t += MIX_STEP) {
+    for (let i = 0; i * MIX_STEP < total; i++) {
+      const t = i * MIX_STEP;
       const v = resolveAt(project, t, rOpts), strips = stripsOf(v), master = v['g.master.gain'];
       const key = JSON.stringify([strips, master]);
       if (key === prev) continue;
       prev = key;
-      g.mixer.apply(strips, master, t, t === 0);
+      g.mixer.apply(strips, master, t, i === 0);
     }
     await Promise.all(g.channels.map((ch) => ch.flush()));
     progress(0.3);
     const buf = await ctx.startRendering();
     progress(0.9);
 
+    const raw = opts.debugCapture ? Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c).slice()) : null;
     const chans = [];
     for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c).slice(outStart, outStart + outLen));
     let peak = 0;
@@ -129,7 +133,9 @@ export async function renderOffline(project, kind, opts = {}) {
     const d0 = chans[0];
     for (let i = 0; i < d0.length; i++) ss += d0[i] * d0[i];
     progress(1);
-    return { chans, peak, rms: Math.sqrt(ss / Math.max(1, d0.length)), sampleRate: SAMPLE_RATE, lengthSec: d0.length / SAMPLE_RATE };
+    const res = { chans, peak, rms: Math.sqrt(ss / Math.max(1, d0.length)), sampleRate: SAMPLE_RATE, lengthSec: d0.length / SAMPLE_RATE };
+    if (raw) { res.raw = raw; res.preSamples = outStart; }
+    return res;
   } finally {
     await g.dispose();
   }

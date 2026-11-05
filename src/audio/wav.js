@@ -7,12 +7,13 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 /** @param chans Float32Array[] (1 or 2, equal length) @returns ArrayBuffer of a RIFF/WAVE 24-bit LE PCM file */
 export function encodeWav24(chans, sampleRate = 48000) {
   const nc = chans.length, n = nc ? chans[0].length : 0;
-  const buf = new ArrayBuffer(44 + n * nc * 3), dv = new DataView(buf);
+  const dataLen = n * nc * 3, pad = dataLen & 1; // RIFF chunks are word aligned
+  const buf = new ArrayBuffer(44 + dataLen + pad), dv = new DataView(buf);
   const str = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
-  str(0, 'RIFF'); dv.setUint32(4, 36 + n * nc * 3, true); str(8, 'WAVE'); str(12, 'fmt '); dv.setUint32(16, 16, true);
+  str(0, 'RIFF'); dv.setUint32(4, 36 + dataLen + pad, true); str(8, 'WAVE'); str(12, 'fmt '); dv.setUint32(16, 16, true);
   dv.setUint16(20, 1, true); dv.setUint16(22, nc, true); dv.setUint32(24, sampleRate, true);
   dv.setUint32(28, sampleRate * nc * 3, true); dv.setUint16(32, nc * 3, true); dv.setUint16(34, 24, true);
-  str(36, 'data'); dv.setUint32(40, n * nc * 3, true);
+  str(36, 'data'); dv.setUint32(40, dataLen, true);
   let o = 44;
   for (let i = 0; i < n; i++) {
     for (let c = 0; c < nc; c++) {

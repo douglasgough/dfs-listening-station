@@ -77,3 +77,14 @@ test('zipStore central directory lists the files with matching sizes and crc', (
     p += 46 + nl;
   });
 });
+
+test('odd-length data chunk gets a RIFF pad byte (mono, n = 11)', () => {
+  const n = 11, a = new Float32Array(n);
+  for (let i = 0; i < n; i++) a[i] = (i - 5) / 5;
+  const buf = encodeWav24([a]), dv = new DataView(buf);
+  assert.equal(dv.getUint32(40, true), 33);
+  assert.equal(buf.byteLength, 44 + 33 + 1);
+  assert.equal(dv.getUint32(4, true), buf.byteLength - 8);
+  assert.equal(dv.getUint8(buf.byteLength - 1), 0);
+  for (let i = 0; i < n; i++) assert.ok(Math.abs(s24(dv, 44 + i * 3) / 8388607 - a[i]) <= 1 / 8388607 + 1e-7);
+});
