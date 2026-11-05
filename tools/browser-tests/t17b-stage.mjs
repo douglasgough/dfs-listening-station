@@ -6,7 +6,7 @@ const b = await puppeteer.launch({ executablePath: '/Applications/Google Chrome.
 const p = await b.newPage(); const logs = [];
 p.on('console', m => { if (['error', 'warning'].includes(m.type())) logs.push(m.text()); });
 p.on('pageerror', e => logs.push('pageerror: ' + e.message));
-await p.goto('https://dfs-listening-station.test/app.html', { waitUntil: 'networkidle0' });
+await p.goto('https://dfs-listening-station.test/', { waitUntil: 'networkidle0' });
 const wait = (ms = 120) => new Promise(r => setTimeout(r, ms));
 const ok = (n, c, extra = '') => console.log(c ? 'PASS' : 'FAIL', n, extra);
 const G = (id) => p.evaluate(i => window.__app.store.get(i), id);

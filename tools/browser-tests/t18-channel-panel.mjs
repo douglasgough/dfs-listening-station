@@ -3,7 +3,7 @@
 import { createRequire } from 'node:module';
 const puppeteer = createRequire(process.cwd() + '/')('puppeteer-core');
 
-const URL_ = process.env.DFS_URL || 'https://dfs-listening-station.test/app.html';
+const URL_ = process.env.DFS_URL || 'https://dfs-listening-station.test/';
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const OUT = process.env.SHOT_DIR || '/tmp';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -112,7 +112,7 @@ await ev(() => { const n = document.querySelector('.chbody input[type=number][mi
 check('steps number writes event.steps and shows 12 buttons', (await get('ch3.event.steps')) === 12 && (await ev(() => [...document.querySelectorAll('.chbody .steps button')].filter(b => !b.hidden).length)) === 12);
 await ev(() => window.__app.panel.setCurrentStep(3));
 check('setCurrentStep marks a step', await ev(() => document.querySelectorAll('.chbody .steps button.now').length === 1 && document.querySelector('.chbody .steps button.now').getAttribute('aria-label') === 'Step 4'));
-check('Trigger now disabled without handler', await ev(() => [...document.querySelectorAll('.chbody button')].find(b => b.textContent === 'Trigger now').disabled));
+check('Trigger now is enabled (Task 20 supplies the handler)', await ev(() => ![...document.querySelectorAll('.chbody button')].find(b => b.textContent === 'Trigger now').disabled));
 await clickSeg('Event timing', 'Regular');
 check('regular shows interval', await ev(() => !!document.querySelector('.chbody .timectl')?.offsetParent));
 await clickSeg('Event timing', 'Pattern');

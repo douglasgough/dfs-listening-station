@@ -3,7 +3,7 @@
 import { createRequire } from 'node:module';
 import { writeFileSync } from 'node:fs';
 const puppeteer = createRequire(process.cwd() + '/')('puppeteer-core');
-const URL_ = process.env.DFS_URL || 'https://dfs-listening-station.test/app.html';
+const URL_ = process.env.DFS_URL || 'https://dfs-listening-station.test/';
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const OUT = process.env.SHOT_DIR || '/tmp';
 const sleep = ms => new Promise(r => setTimeout(r, ms));

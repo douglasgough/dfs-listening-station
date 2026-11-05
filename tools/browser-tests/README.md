@@ -7,7 +7,7 @@ dependency of the app; install it in a scratch directory outside the repo:
 ```sh
 mkdir -p /tmp/bt && cd /tmp/bt && npm init -y && npm i puppeteer-core
 # run from the scratch dir so that `puppeteer-core` resolves from its node_modules:
-DFS_URL=https://dfs-listening-station.test/app.html node /path/to/repo/tools/browser-tests/t18-channel-panel.mjs
+DFS_URL=https://dfs-listening-station.test/ node /path/to/repo/tools/browser-tests/t18-channel-panel.mjs
 # or without installing anything permanently:
 npx -y -p puppeteer-core node /path/to/repo/tools/browser-tests/t18-channel-panel.mjs
 ```

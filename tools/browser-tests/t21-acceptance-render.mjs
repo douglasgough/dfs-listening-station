@@ -3,7 +3,7 @@
 import { createRequire } from 'node:module';
 import { writeFileSync } from 'node:fs';
 const puppeteer = createRequire(process.cwd() + '/')('puppeteer-core');
-const URL_ = process.env.DFS_URL || 'https://dfs-listening-station.test/app.html';
+const URL_ = process.env.DFS_URL || 'https://dfs-listening-station.test/';
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const OUT = process.env.WAV_OUT || '/tmp/new-allende-loop.wav';
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--ignore-certificate-errors'], defaultViewport: { width: 1400, height: 1000 } });

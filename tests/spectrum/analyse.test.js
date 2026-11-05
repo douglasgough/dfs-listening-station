@@ -6,14 +6,13 @@ import { parseSpectrumText } from '../../src/spectrum/parse.js';
 import { EXAMPLE_LINES, decodeExample } from '../../src/spectrum/examples.js';
 
 const golden = JSON.parse(readFileSync(new URL('../fixtures/prototype-golden.json', import.meta.url), 'utf8'));
-const protoSrc = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+// The prototype's EXAMPLES array, snapshotted from the original index.html before it was replaced (cutover).
+const protoExamples = JSON.parse(readFileSync(new URL('../fixtures/prototype-examples.json', import.meta.url), 'utf8'));
 const TOL = 1e-9;
 
 test('EXAMPLE_LINES match the prototype EXAMPLES array byte for byte', () => {
-  const line = protoSrc.split('\n').find(l => l.startsWith('const EXAMPLES = '));
-  const proto = JSON.parse(line.match(/^const EXAMPLES = (\[.*\]);\s*$/)[1]);
   assert.equal(EXAMPLE_LINES.length, 8);
-  assert.deepEqual(EXAMPLE_LINES, proto);
+  assert.deepEqual(EXAMPLE_LINES, protoExamples);
 });
 
 test('every golden example is present in EXAMPLE_LINES', () => {

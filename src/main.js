@@ -1,5 +1,5 @@
-/* App entry. Tasks 17/17b: app model, layer panel and stage canvases. Audio, channels, matrix and dock arrive in later tasks. */
-// From file:// the classic guard in app.html has already replaced the page with the "serve over HTTP(S)"
+/* App entry: wires the store, app model, stage, layer and channel panels, matrix, audio controller, transport bar and dock. */
+// From file:// the classic guard in index.html has already replaced the page with the "serve over HTTP(S)"
 // message (and Chrome refuses module loads from file:// anyway): do no work there.
 if (typeof location === 'undefined' || location.protocol !== 'file:') {
   try {
