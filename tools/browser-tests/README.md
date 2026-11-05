@@ -14,3 +14,6 @@ npx -y -p puppeteer-core node /path/to/repo/tools/browser-tests/t18-channel-pane
 
 Environment: `DFS_URL` (default the lerd site above), `CHROME_PATH` (default macOS Google Chrome), `SHOT_DIR`
 (default `/tmp`; screenshots are saved as `ui-t18-*.png`). The script exits non-zero if any check fails.
+
+Scripts: `t18-channel-panel.mjs` (channel panel), `t18b-timeline.mjs` (timeline editor), `t19-matrix.mjs` (modulation matrix).
+Each prints PASS/FAIL per check and writes screenshots to `SHOT_DIR`.

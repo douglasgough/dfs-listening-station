@@ -3,13 +3,14 @@
 // message (and Chrome refuses module loads from file:// anyway): do no work there.
 if (typeof location === 'undefined' || location.protocol !== 'file:') {
   try {
-  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { createChannelPanel }, { createTimelineEditor }, { EXAMPLE_LAYERS }] = await Promise.all([
+  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { createChannelPanel }, { createTimelineEditor }, { createMatrix }, { EXAMPLE_LAYERS }] = await Promise.all([
     import('./core/state.js'),
     import('./ui/app-state.js'),
     import('./ui/layer-panel.js'),
     import('./ui/stage.js'),
     import('./ui/channel-panel.js'),
     import('./ui/timeline.js'),
+    import('./ui/matrix.js'),
     import('./spectrum/examples.js'),
   ]);
 
@@ -21,6 +22,8 @@ if (typeof location === 'undefined' || location.protocol !== 'file:') {
     store, app,
     mountTimeline: (slot, ch) => createTimelineEditor(slot, { store, app, channel: ch, getPlayhead: (...a) => window.__app && window.__app.getPlayhead ? window.__app.getPlayhead(...a) : null }),
   });
+
+  const matrix = createMatrix(document.getElementById('matrix'), { store, app, onLearn: (...a) => (window.__app && window.__app.onLearn ? window.__app.onLearn(...a) : undefined) });
 
   // tooltips (ported from the prototype)
   const tipEl = document.getElementById('tip');
@@ -54,7 +57,7 @@ if (typeof location === 'undefined' || location.protocol !== 'file:') {
     try { localStorage.setItem('dfs-tips', tipsOn ? '1' : '0'); } catch (e) { /* storage unavailable */ }
   });
 
-  window.__app = { store, app, panel, layerPanel, stage };
+  window.__app = { store, app, panel, layerPanel, stage, matrix };
   console.info('app shell loaded');
   } catch (e) {
     console.error(e);
