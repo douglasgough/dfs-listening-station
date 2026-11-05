@@ -87,7 +87,6 @@ test('layerOnStage: line keeps correct normalised position when zoomed; dropped 
   assert.equal(zl.lines[0].type, 'em');
   assert.deepEqual(zl.axis, z);
   const out = layerOnStage(l, { unit: 'nm', x0: 400, x1: 500 });
-  assert.ok(out === null || out.lines.length === 0);
   assert.ok(out !== null && out.lines.length === 0);
   // original untouched
   assert.equal(l.lines[0].x, 656.28);
@@ -103,7 +102,7 @@ test('layerOnStage: line widths convert by local derivative', () => {
   // |d(1e7/x)| * w = 1e7/500^2 * 10 = 400; finite-difference over +-w/2 is close
   assert.ok(Math.abs(cm.lines[0].width - 400) / 400 < 0.01);
   const none = layerOnStage(linesLayer([{ x: 500, intensity: 1 }]), { unit: 'µm', x0: 0.4, x1: 0.7 });
-  assert.equal('width' in none.lines[0] && none.lines[0].width !== undefined, false);
+  assert.equal(none.lines[0].width, undefined);
 });
 
 test('layerOnStage: sampled µm layer on nm stage lands at right nm and ascends; exact edges', () => {
@@ -216,4 +215,97 @@ test('profileOnStage: non-overlapping layer gives all zeros', () => {
   const p = profileOnStage(s, { unit: 'nm', x0: 400, x1: 700 }, 64);
   assert.equal(p.length, 64);
   assert.ok(p.every(v => v === 0));
+});
+
+const strictlyInc = (a) => a.every((v, i) => i === 0 || v > a[i - 1]);
+
+test('layerOnStage: stage edges on existing samples give strictly increasing x, no duplicates', () => {
+  const s = sampled([500, 600, 700], [1, 2, 3], 'nm');
+  const cases = [
+    [{ x0: 600, x1: 650 }, [600, 650]],      // lower edge on interior sample
+    [{ x0: 550, x1: 600 }, [550, 600]],      // upper edge on interior sample
+    [{ x0: 600, x1: 600.0000001 }, [600, 600.0000001]],
+    [{ x0: 500, x1: 650 }, [500, 600, 650]], // lower edge on layer endpoint
+    [{ x0: 550, x1: 700 }, [550, 600, 700]], // upper edge on layer endpoint
+    [{ x0: 500, x1: 700 }, [500, 600, 700]], // both on endpoints
+    [{ x0: 500, x1: 600 }, [500, 600]],
+  ];
+  for (const [st, want] of cases) {
+    const out = layerOnStage(s, { unit: 'nm', ...st });
+    assert.deepEqual(out.x, want, JSON.stringify(st));
+    assert.ok(strictlyInc(out.x), JSON.stringify(st));
+    assert.equal(out.y.length, out.x.length);
+  }
+  near(layerOnStage(s, { unit: 'nm', x0: 600, x1: 650 }).y[0], 2);
+  near(layerOnStage(s, { unit: 'nm', x0: 550, x1: 600 }).y[1], 2);
+});
+
+test('layerOnStage: duplicate positions from conversion are collapsed, first kept', () => {
+  const s = sampled([500, 500, 600], [1, 9, 2], 'nm');
+  const out = layerOnStage(s, { unit: 'nm', x0: 400, x1: 700 });
+  assert.deepEqual(out.x, [500, 600]);
+  assert.deepEqual(out.y, [1, 2]);
+  // two cm-1 points that collapse to the same nm after rounding
+  const t = sampled([10000, 10000 * (1 + 1e-17), 20000], [1, 2, 3], 'cm⁻¹');
+  const o2 = layerOnStage(t, { unit: 'nm', x0: 400, x1: 1200 });
+  assert.ok(strictlyInc(o2.x));
+});
+
+test('layerOnStage: cm-1 layer with axis starting at 0 still maps its positive points', () => {
+  const x = [0, 1000, 2500, 4000];
+  const s = { ...sampled(x, [9, 1, 2, 3], 'cm⁻¹'), axis: { unit: 'cm⁻¹', x0: 0, x1: 4000 } };
+  const out = layerOnStage(s, { unit: 'nm', x0: 1000, x1: 20000 });
+  assert.ok(out !== null);
+  assert.ok(out.x.every(v => Number.isFinite(v) && v > 0));
+  assert.ok(out.y.every(Number.isFinite));
+  assert.ok(strictlyInc(out.x));
+  near(out.x[0], 2500);   // 4000 cm-1
+  near(out.x[out.x.length - 1], 10000); // 1000 cm-1
+  assert.deepEqual(out.y, [3, 2, 1]);
+  assert.ok(!out.y.includes(9)); // the 0 cm-1 point is skipped
+  // negative positions skipped too
+  const n = { ...sampled([-5, 1000, 2500, 4000], [9, 1, 2, 3], 'cm⁻¹') };
+  const on = layerOnStage(n, { unit: 'nm', x0: 1000, x1: 20000 });
+  assert.ok(on.x.every(v => Number.isFinite(v) && v > 0));
+});
+
+test('layerOnStage: lines layer with unconvertible axis endpoint is not dropped', () => {
+  const l = linesLayer([{ x: 2000, intensity: 1, width: 10 }], { unit: 'cm⁻¹', x0: 0, x1: 4000 });
+  const out = layerOnStage(l, { unit: 'nm', x0: 1000, x1: 20000 });
+  assert.ok(out !== null);
+  assert.equal(out.lines.length, 1);
+  near(out.lines[0].x, 5000);
+  assert.ok(Number.isFinite(out.lines[0].width));
+  // a line at 0 cm-1 is simply skipped
+  const z = linesLayer([{ x: 0, intensity: 1 }, { x: 2000, intensity: 1 }], { unit: 'cm⁻¹', x0: 0, x1: 4000 });
+  assert.equal(layerOnStage(z, { unit: 'nm', x0: 1000, x1: 20000 }).lines.length, 1);
+});
+
+test('layerOnStage / profileOnStage: invalid stage ranges give null / zeros', () => {
+  const s = sampled([500, 600, 700], [1, 2, 3], 'nm');
+  for (const st of [{ x0: 700, x1: 500 }, { x0: 600, x1: 600 }, { x0: NaN, x1: 700 }, { x0: 500, x1: Infinity }]) {
+    const stage = { unit: 'nm', ...st };
+    assert.equal(layerOnStage(s, stage), null);
+    assert.ok(profileOnStage(s, stage, 16).every(v => v === 0));
+  }
+});
+
+test('stage range including 0 in a reciprocal unit produces no NaN/Infinity', () => {
+  const nmLines = linesLayer([{ x: 500, intensity: 1, width: 5 }, { x: 700, intensity: 2 }], { unit: 'nm', x0: 400, x1: 800 });
+  const nmSamp = sampled([400, 500, 600, 800], [1, 2, 3, 4], 'nm');
+  const cmSamp = { ...sampled([0, 1000, 5000, 20000], [9, 1, 2, 3], 'cm⁻¹'), axis: { unit: 'cm⁻¹', x0: 0, x1: 20000 } };
+  for (const unit of ['cm⁻¹', 'Hz', 'GHz']) {
+    const stage = { unit, x0: 0, x1: unit === 'cm⁻¹' ? 30000 : unit === 'Hz' ? 1e15 : 1e6 };
+    for (const l of [nmLines, nmSamp, cmSamp]) {
+      const out = layerOnStage(l, stage);
+      if (out) {
+        const vals = l.kind === 'lines'
+          ? out.lines.flatMap(q => [q.x, q.intensity, ...(q.width === undefined ? [] : [q.width])])
+          : [...out.x, ...out.y];
+        assert.ok(vals.every(Number.isFinite), `${unit} ${l.kind}`);
+      }
+      const p = profileOnStage(l, stage, 64);
+      assert.ok(p.every(Number.isFinite), `profile ${unit} ${l.kind}`);
+    }
+  }
 });

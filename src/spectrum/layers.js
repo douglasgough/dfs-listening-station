@@ -77,12 +77,14 @@ export function layerOnStage(layer, stage) {
   if (!layer || !stageOk(stage)) return null;
   const f = mapperFor(layer, stage);
   if (!f) return null;
-  const a = f(layer.axis.x0), b = f(layer.axis.x1);
-  if (a === null || b === null) return null;
 
   if (layer.kind === 'lines') {
-    const lo = Math.min(a, b), hi = Math.max(a, b);
-    if (!(Math.max(lo, stage.x0) < Math.min(hi, stage.x1))) return null;
+    // Unconvertible axis endpoints (e.g. 0 cm⁻¹) are treated as unbounded: skip the overlap check.
+    const a = f(layer.axis.x0), b = f(layer.axis.x1);
+    if (a !== null && b !== null) {
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      if (!(Math.max(lo, stage.x0) < Math.min(hi, stage.x1))) return null;
+    }
     const lines = [];
     for (const ln of layer.lines || []) {
       const x = f(ln.x);
@@ -111,12 +113,14 @@ export function layerOnStage(layer, stage) {
   const cmin = xs[0], cmax = xs[xs.length - 1];
   if (!(Math.max(cmin, stage.x0) < Math.min(cmax, stage.x1))) return null;
 
+  // Kept samples plus interpolated edge points; output is strictly increasing (first of equal x wins).
   const ox = [], oy = [];
-  if (cmin < stage.x0 && stage.x0 < cmax) { ox.push(stage.x0); oy.push(interpAt(xs, ys, stage.x0)); }
+  const push = (x, y) => { if (!ox.length || x > ox[ox.length - 1]) { ox.push(x); oy.push(y); } };
+  if (cmin < stage.x0 && stage.x0 < cmax) push(stage.x0, interpAt(xs, ys, stage.x0));
   for (let i = 0; i < xs.length; i++) {
-    if (xs[i] >= stage.x0 && xs[i] <= stage.x1) { ox.push(xs[i]); oy.push(ys[i]); }
+    if (xs[i] >= stage.x0 && xs[i] <= stage.x1) push(xs[i], ys[i]);
   }
-  if (cmin < stage.x1 && stage.x1 < cmax) { ox.push(stage.x1); oy.push(interpAt(xs, ys, stage.x1)); }
+  if (cmin < stage.x1 && stage.x1 < cmax) push(stage.x1, interpAt(xs, ys, stage.x1));
   if (ox.length < 2) return null;
   return meta(layer, stage, { x: ox, y: oy });
 }
