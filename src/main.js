@@ -1,17 +1,19 @@
-/* App entry. Task 17: app model + layer panel. Audio, stage canvases, channels, matrix and dock arrive in later tasks. */
+/* App entry. Tasks 17/17b: app model, layer panel and stage canvases. Audio, channels, matrix and dock arrive in later tasks. */
 // From file:// the classic guard in app.html has already replaced the page with the "serve over HTTP(S)"
 // message (and Chrome refuses module loads from file:// anyway): do no work there.
 if (typeof location === 'undefined' || location.protocol !== 'file:') {
   try {
-  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { EXAMPLE_LAYERS }] = await Promise.all([
+  const [{ createState, createStore }, { createAppState }, { createLayerPanel }, { createStage }, { EXAMPLE_LAYERS }] = await Promise.all([
     import('./core/state.js'),
     import('./ui/app-state.js'),
     import('./ui/layer-panel.js'),
+    import('./ui/stage.js'),
     import('./spectrum/examples.js'),
   ]);
 
   const store = createStore(createState());
   const app = createAppState({ store, examples: EXAMPLE_LAYERS });
+  const stage = createStage(document.getElementById('stage-host'), { store, app });
   const panel = createLayerPanel(document.getElementById('layers'), app);
 
   // tooltips (ported from the prototype)
@@ -46,7 +48,7 @@ if (typeof location === 'undefined' || location.protocol !== 'file:') {
     try { localStorage.setItem('dfs-tips', tipsOn ? '1' : '0'); } catch (e) { /* storage unavailable */ }
   });
 
-  window.__app = { store, app, panel };
+  window.__app = { store, app, panel, stage };
   console.info('app shell loaded');
   } catch (e) {
     console.error(e);
