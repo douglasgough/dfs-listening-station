@@ -33,11 +33,24 @@ test('24 ticks at 0.5/24 s settle tempo to 120 bpm and mark source midi', () => 
   assert.equal(transport.source, 'midi');
 });
 
-test('+-10% interval jitter stays within 2 bpm of 120', () => {
-  const { transport, f } = rig();
-  const r = lcg(12345);
-  ticks(f, 0, 200, () => TICK * (1 + (r() * 2 - 1) * 0.1));
-  near(transport.bpm, 120, 2);
+test('+-10% independent interval jitter: within 2 bpm of 120 after 240 ticks, 8 fixed seeds', () => {
+  for (const seed of [1, 12345, 777, 20240611, 99991, 424242, 31337, 8675309]) {
+    const { transport, f } = rig();
+    const r = lcg(seed);
+    ticks(f, 0, 240, () => TICK * (1 + (r() * 2 - 1) * 0.1));
+    near(transport.bpm, 120, 2, `seed ${seed}`);
+  }
+});
+
+test('+-10% tick-timestamp jitter: stays within 2 bpm at every tick after 240, 200 seeds', () => {
+  for (let seed = 1; seed <= 200; seed++) {
+    const { transport, f } = rig();
+    const r = lcg(seed);
+    for (let i = 0; i < 480; i++) {
+      f.handle([0xf8], i * TICK + (r() * 2 - 1) * 0.1 * TICK);
+      if (i >= 240) near(transport.bpm, 120, 2, `seed ${seed} tick ${i}`);
+    }
+  }
 });
 
 test('tempo follows a change', () => {
@@ -83,6 +96,7 @@ test('FB resumes without resetting the beat', () => {
 
 test('F2 [lsb=8,msb=0] relocates to beat 2 (16th notes, 4 per beat)', () => {
   const { transport, f } = rig();
+  f.handle([0xf8], 0); // engage
   f.handle([0xf2, 8, 0], 0);
   near(transport.beatAt(0), 2, 1e-9);
   assert.equal(transport.running, false);
@@ -90,6 +104,7 @@ test('F2 [lsb=8,msb=0] relocates to beat 2 (16th notes, 4 per beat)', () => {
 
 test('F2 combines lsb and msb', () => {
   const { transport, f } = rig();
+  f.handle([0xf8], 0); // engage
   f.handle([0xf2, 1, 1], 0); // 1 + 128 = 129 sixteenths
   near(transport.beatAt(0), 129 / 4, 1e-9);
 });
@@ -248,4 +263,36 @@ test('FA resets the tempo estimate', () => {
   f.handle([0xfa], 2);
   ticks(f, 2.1, 30, () => 0.5 / 48); // 240 bpm
   near(transport.bpm, 240, 0.5);
+});
+
+test('R19: FC and F2 from a never-engaged device do not touch an internal transport', () => {
+  const { transport, f } = rig();
+  transport.start(0);
+  f.handle([0xfc], 1);
+  f.handle([0xf2, 8, 0], 1);
+  assert.equal(transport.running, true);
+  assert.equal(transport.source, 'internal');
+  near(transport.beatAt(1), 1.5, 1e-9); // 90 bpm, undisturbed
+});
+
+test('R19: after a tick, FC and F2 take effect', () => {
+  const { transport, f } = rig();
+  transport.start(0);
+  f.handle([0xf8], 1);
+  f.handle([0xf2, 8, 0], 1);
+  near(transport.beatAt(1), 2, 1e-9);
+  f.handle([0xfc], 1);
+  assert.equal(transport.running, false);
+  assert.equal(transport.source, 'midi');
+});
+
+test('R19: after FA, FC takes effect; after FB, F2 takes effect', () => {
+  const a = rig();
+  a.f.handle([0xfa], 0);
+  a.f.handle([0xfc], 1);
+  assert.equal(a.transport.running, false);
+  const b = rig();
+  b.f.handle([0xfb], 0);
+  b.f.handle([0xf2, 16, 0], 0);
+  near(b.transport.beatAt(0), 4, 1e-9);
 });

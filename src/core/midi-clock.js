@@ -8,13 +8,17 @@
  *
  * Tempo: exponential moving average over inter-tick intervals, 24 ticks per quarter note,
  *   bpm = 60 / (24 * avgInterval).
- * Smoothing constant EMA_ALPHA = 0.1 (time constant ~10 ticks, under half a beat). With +-10%
- * uniform interval jitter the steady-state error of the average is ~1.3% (about 1.6 bpm at
- * 120); a larger alpha tracks tempo changes faster but passes more jitter into the bpm.
+ * Smoothing: alpha = max(EMA_ALPHA, 1/n) where n counts intervals folded in since the last reset,
+ * i.e. a plain running mean while the estimate is young (fast, exact lock-on), then an EMA with
+ * EMA_ALPHA = 0.05 (time constant ~20 ticks, under one beat). Why 0.05 and not 0.1: independent
+ * +-10% interval noise gives a steady-state error std of ~1.6 bpm at 0.1 (a fixed-seed +-2 bpm
+ * check passes or fails by luck of the seed), ~1.1 bpm at 0.05. Real clock jitter is mostly
+ * timestamp noise, which the EMA suppresses far better (over 2000 seeds the worst error after
+ * 240 ticks was 1.8 bpm at 0.1 and 0.8 bpm at 0.05).
  */
 
 export const TICKS_PER_BEAT = 24;
-export const EMA_ALPHA = 0.1;
+export const EMA_ALPHA = 0.05;
 const MIN_PLAUSIBLE_BPM = 20;
 const MAX_PLAUSIBLE_BPM = 400;
 const APPLY_EVERY_TICKS = 24;
@@ -29,8 +33,9 @@ export class MidiClockFollower {
     this.lostAfterSec = lostAfterSec;
     this._lastTickT = null;   // time of the most recent tick ever seen
     this._avg = null;         // EMA of the inter-tick interval, seconds
-    this._ticks = 0;          // ticks since the last reset
+    this._ticks = 0;          // intervals folded into the estimate since the last reset
     this._applied = null;     // bpm last pushed to the transport by this follower
+    this._engaged = false;    // heard clock/start/continue at least once since construction
     this._lostStopped = false; // poll() stopped the transport because the clock went silent
   }
 
@@ -43,6 +48,7 @@ export class MidiClockFollower {
       case 0xf8: this._tick(tSec); break;
       case 0xfa: // start: from the top, tempo estimate rebuilt
         this.transport.source = 'midi';
+        this._engaged = true;
         this._lostStopped = false;
         this._resetEstimate();
         this.transport.locate(0, tSec);
@@ -50,15 +56,17 @@ export class MidiClockFollower {
         break;
       case 0xfb: // continue: no relocation
         this.transport.source = 'midi';
+        this._engaged = true;
         this._lostStopped = false;
         this.transport.start(tSec);
         break;
-      case 0xfc: // stop; a no-op when already stopped (also covers FC before any FA)
+      case 0xfc: // stop; ignored until engaged so a silent device cannot stop an internal transport
+        if (!this._engaged) return;
         this._lostStopped = false;
         this.transport.stop(tSec);
         break;
       case 0xf2: { // song position pointer, in MIDI beats (sixteenth notes)
-        if (bytes.length < 3) return;
+        if (!this._engaged || bytes.length < 3) return; // same gate as stop
         const lsb = bytes[1];
         const msb = bytes[2];
         if (!(lsb >= 0 && lsb <= 127 && msb >= 0 && msb <= 127)) return;
@@ -92,6 +100,7 @@ export class MidiClockFollower {
   _tick(t) {
     const tr = this.transport;
     tr.source = 'midi';
+    this._engaged = true;
     const prev = this._lastTickT;
     const resumed = this._lostStopped;
     if (prev === null || t > prev) this._lastTickT = t;
@@ -105,8 +114,9 @@ export class MidiClockFollower {
     if (!(iv > 0)) return;
     const bpm = intervalToBpm(iv);
     if (bpm < MIN_PLAUSIBLE_BPM || bpm > MAX_PLAUSIBLE_BPM) return; // outlier: not folded in
-    this._avg = this._avg === null ? iv : this._avg + EMA_ALPHA * (iv - this._avg);
     this._ticks++;
+    this._avg = this._avg === null ? iv
+      : this._avg + Math.max(EMA_ALPHA, 1 / this._ticks) * (iv - this._avg);
     const est = intervalToBpm(this._avg);
     if (this._applied === null || this._ticks % APPLY_EVERY_TICKS === 0
       || Math.abs(est - this._applied) > APPLY_DELTA_BPM) {
