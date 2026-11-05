@@ -15,9 +15,10 @@
  *
  * TIME AND SMOOTHING
  *   Engine time starts at 0 and advances only through render. Frame application is sample-accurate:
- *   render splits at frame timestamps. The first frame ever scheduled whose t <= current engine time
- *   applies instantly (no smoothing); later frames apply with one-pole smoothing (time constants
- *   0.04 s for gains/amplitudes, 0.07 s for frequencies).
+ *   render splits at frame timestamps. Instant rule: a frame applies instantly (no smoothing) only if
+ *   it is the FIRST frame ever scheduled AND its t <= current engine time. A first frame with a later
+ *   t fades in (smoothed) when engine time reaches it. Every other frame applies with one-pole
+ *   smoothing (time constants 0.04 s for gains/amplitudes, 0.07 s for frequencies).
  *
  * LEVELS
  *   opts.plain = true disables slow random amplitude modulation (e.g. the prototype's per-band wobble),
@@ -28,10 +29,20 @@
  *
  * EVENTS  EventSpec = {t, f, amp, pan, envRoutes:{a,h,d,amount}[], staticGain}
  *   Gain = amp * staticGain * PROD_i (1 + amount_i * (env_i(age) - 1)), env = linear attack a, hold h,
- *   exponential decay d (a >= 0.002, d >= 0.02, zero after a+h+8d). With no envRoute: a fixed gate,
- *   full level for 0.245 s then a 5 ms linear release (ends at 0.25 s; ruling R1). An event with t in
- *   the past starts now with the phase and level it would have by then (sine phase 2*pi*f*age).
- *   Stereo: constant-power pan, L = cos((p+1)pi/4), R = sin((p+1)pi/4); mono ignores pan.
+ *   exponential decay d (a >= 0.002, d >= 0.02, zero after a+h+8d). Each route's amount is clamped to
+ *   [-1, 1] (as eventRoutes does); a route with a non-finite amount is ignored. With no envRoute: a
+ *   fixed gate, full level for 0.245 s then a 5 ms linear release (ends at 0.25 s; ruling R1). An event
+ *   with t in the past starts now with the phase and level it would have by then (sine phase
+ *   2*pi*f*age).
+ *
+ * STEREO LEVEL CONVENTIONS (ChannelSynth, matching the prototype's Web Audio graph)
+ *   Constant-power pan law L = cos((p+1)pi/4), R = sin((p+1)pi/4):
+ *     - bands pan with bandPan: a centred band is 0.707 per channel;
+ *     - events with a numeric pan use the same law: pan 0 is 0.707 per channel;
+ *     - events with pan null/undefined are centred at 1.0 in both channels;
+ *     - comb, anchor and noise are 1.0 in both channels (noise through 7 ms / 13 ms delays).
+ *   Mono ignores pan: bands and events are 1.0. Another engine need not reproduce these exact levels,
+ *   but it must keep pan -1 / +1 isolation (all energy in one channel) and finite output.
  *
  * ROBUSTNESS
  *   Non-finite or extreme inputs never produce NaN/Infinity in the output, and the engine keeps working.

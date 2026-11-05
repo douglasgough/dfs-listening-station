@@ -166,6 +166,80 @@ test('disposal: zeros afterwards, repeated dispose and late schedules are harmle
   assert.equal(e.render(0).left.length, 0);
 });
 
+test('an event whose route does not reach 0 (amount 0.5) ends through the 5 ms fade, without a step', () => {
+  const e = mk();
+  const route = { a: 0.002, h: 0, d: 0.02, amount: 0.5 };   // life 0.162 s: ends at 0.262 s, mid-cycle at 1100 Hz
+  e.schedule(makeFrame(0, { events: [{ t: 0.1, f: 1100, amp: 0.2, pan: 0, envRoutes: [route], staticGain: 1 }] }));
+  const { left } = renderSec(e, 0.4);
+  let last = -1;
+  for (let i = 0; i < left.length; i++) if (left[i] !== 0) last = i;
+  assert.ok(Math.abs(last - Math.round(0.262 * SR)) <= 2, `voice ends at sample ${last}`);
+  let pre = 0;
+  for (let i = last - 720; i < last - 240; i++) pre = Math.max(pre, Math.abs(left[i]));
+  assert.ok(Math.abs(pre - 0.1) < 0.005, `level before the fade ${pre} (route floor 1 - amount)`);
+  assert.ok(Math.abs(left[last]) < 1e-3, `step at removal ${left[last]}`);
+});
+
+test('sanitising defaults: balance NaN = 0.5, match NaN = 1, staticGain NaN = 1', () => {
+  const ev = (sg) => ({ t: 0.05, f: 900, amp: 0.1, pan: 0, envRoutes: [{ a: 0.002, h: 0, d: 0.1, amount: 1 }], staticGain: sg });
+  const run = (over, sg = 1) => {
+    const e = mk();
+    e.schedule(makeFrame(0, { bandF: { 0: 440 }, bandA: { 0: 0.1 }, events: [ev(sg)], ...over }));
+    e.schedule(makeFrame(0.2, { bandF: { 0: 550 }, bandA: { 0: 0.05 }, ...over }));
+    return renderSec(e, 0.4).left;
+  };
+  const ref = run({});
+  assert.ok(peak(ref) > 0.1);
+  assert.equal(sameArray(run({ balance: NaN }), ref), null, 'balance NaN');
+  assert.equal(sameArray(run({ match: NaN }), ref), null, 'match NaN');
+  assert.equal(sameArray(run({}, NaN), ref), null, 'staticGain NaN');
+  assert.equal(sameArray(run({}, undefined), ref), null, 'staticGain missing');
+});
+
+test('a sounding band glides to a new frequency with the 0.07 s one-pole', () => {
+  const A = 0.1, e = mk();
+  e.schedule(makeFrame(0, { bandF: { 0: 440 }, bandA: { 0: A } }));
+  e.schedule(makeFrame(0.5, { bandF: { 0: 660 }, bandA: { 0: A } }));
+  const { left } = renderSec(e, 1.5);
+  let jump = 0;
+  for (let i = Math.round(0.45 * SR); i < left.length; i++) jump = Math.max(jump, Math.abs(left[i] - left[i - 1]));
+  assert.ok(jump <= 1.02 * A * 2 * Math.PI * 660 / SR, `largest jump ${jump}`);
+  // instantaneous frequency around 0.57 s from upward zero crossings
+  const ups = [];
+  for (let i = Math.round(0.56 * SR); i < Math.round(0.58 * SR); i++) {
+    if (left[i - 1] < 0 && left[i] >= 0) ups.push((i - 1 + -left[i - 1] / (left[i] - left[i - 1])) / SR);
+  }
+  const fMeas = (ups.length - 1) / (ups[ups.length - 1] - ups[0]);
+  const fWant = 660 - 220 * Math.exp(-(0.57 - 0.5) / 0.07);
+  assert.ok(Math.abs(fMeas - fWant) < 4, `frequency at 0.57 s ${fMeas} vs ${fWant}`);
+  let best = 0, bp = -1;
+  for (let f = 640; f <= 680; f += 0.5) { const p = goertzel(left, SR, SR / 2, f); if (p > bp) { bp = p; best = f; } }
+  assert.ok(Math.abs(best - 660) <= 1, `converged to ${best}`);
+});
+
+test('long silence: smoothed state reaches exact zeros (no denormals) and stays cheap', () => {
+  for (const stereo of [false, true]) {
+    const sr = 12000, e = createChannelSynth({ sampleRate: sr, stereo, seed: 4, plain: false });
+    const loud = fullFrame(0, [{ t: 0, f: 500, amp: 0.1, pan: 1, envRoutes: [{ a: 0.002, h: 0, d: 0.05, amount: 1 }], staticGain: 1 }]);
+    for (let b = 0; b < 10; b++) loud.bandPan[b] = b % 2 ? 1 : -1;   // pan gains with exact-0 / ~6e-17 targets
+    e.schedule(loud);
+    renderSec(e, 0.5, 4096, sr);
+    e.schedule(makeFrame(0.5, { balance: 1 }));    // all zero, frequencies 0, events muted
+    const time = (blocks) => { const t0 = performance.now(); for (let i = 0; i < blocks; i++) e.render(128); return (performance.now() - t0) / blocks; };
+    const early = time(200);
+    let last = null;
+    const blocks = Math.ceil(120 * sr / 4096);
+    for (let i = 0; i < blocks; i++) last = e.render(4096);
+    const min = e._debugStateMin();
+    assert.ok(min === Infinity || min >= 1e-30, `smallest non-zero state ${min} (stereo ${stereo})`);
+    assert.equal(peak(last.left), 0, 'exact silence after the ramp');
+    if (stereo) assert.equal(peak(last.right), 0);
+    const late = time(200);
+    console.log(`# silent block time (stereo ${stereo}): just after cut ${early.toFixed(4)} ms, after 120 s ${late.toFixed(4)} ms`);
+    assert.ok(late <= 2 * early + 0.02, `late ${late} ms vs early ${early} ms`);
+  }
+});
+
 test('performance: fully active mono channel, mean time per 128-sample block', () => {
   const e = createChannelSynth({ sampleRate: SR, stereo: false, seed: 1, plain: false });
   e.schedule(fullFrame(0));

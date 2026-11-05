@@ -18,6 +18,9 @@
  *   - an oscillator whose smoothed amplitude is silent (< 1e-9) when a frame is applied takes the new
  *     frequency at once (no audible glide from an inaudible state, e.g. from 0 Hz at the first frame);
  *   - a voice with target frequency 0 is silent (no DC);
+ *   - one-pole states snap onto their target when within 1e-12 (gains, pans) or 1e-9 Hz (frequencies),
+ *     and biquad states below 1e-30 are flushed, so long silences end in exact zeros, not denormals;
+ *     _debugStateMin() is a test-only hook that checks this;
  *   - an event with envelope routes fades linearly over the last 5 ms of its life, so routes with
  *     |amount| < 1 (whose gain does not reach 0) end without a click.
  */
@@ -27,6 +30,10 @@ import { MAXB, COMB, NK } from './partials.js';
 const TWO_PI = 2 * Math.PI;
 const TC_GAIN = 0.04, TC_FREQ = 0.07;          // the prototype's setTargetAtTime constants
 const EPS = 1e-9;                              // silent-voice threshold
+// One-pole states snap onto their target once this close (per sample, so block-size independent):
+// without it a decay toward 0 ends in denormals (~5e-321 after ~30 s), which are slow on x86.
+const SNAP_A = 1e-12, SNAP_F = 1e-9;            // gains / pans, frequencies (Hz)
+const FLUSH = 1e-30;                           // biquad states below this are flushed to 0
 const MAX_AMP = 10;                            // amplitude / gain clamp
 const NBO = 3 * MAXB;                          // band oscillators
 const ANCH0 = NBO + COMB;                      // first anchor oscillator
@@ -259,6 +266,21 @@ export class ChannelSynth {
     this.dL = this.dR = this.eL = this.eR = this.tmp = this.cb = null;
   }
 
+  /**
+   * TEST-ONLY hook: the smallest non-zero |value| across the smoothed and recursive state (amplitudes,
+   * frequencies, pans, noise gains and centres, output gains, biquad states, noise delay ring).
+   * Infinity when everything is exactly 0. Used to check that no state decays into denormals.
+   */
+  _debugStateMin() {
+    let m = Infinity;
+    const scan = (x) => { const v = Math.abs(x); if (v !== 0 && v < m) m = v; };
+    for (const arr of [this.a, this.f, this.pL, this.pR, this.ng, this.nf, this.z1, this.z2, this.dly]) {
+      if (arr) for (let i = 0; i < arr.length; i++) scan(arr[i]);
+    }
+    scan(this.gd); scan(this.ge);
+    return m;
+  }
+
   _scratch(len) {
     if (len <= this.cap) return;
     this.cap = Math.max(len, 2 * this.cap, 128);
@@ -270,15 +292,21 @@ export class ChannelSynth {
     const kF = this.kF, kG = this.kG, inv = this.invSr, tf = this.tf[i], ta = this.ta[i];
     let p = this.ph[i], f = this.f[i], a = this.a[i];
     const loud = a >= EPS || ta >= EPS;
-    if (!loud) {
+    if (!loud && a === ta && f === tf) {
+      // settled and silent: only the phase moves
+      const df = f * inv;
+      for (let j = 0; j < len; j++) { p += df; if (p >= 1) p -= 1; }
+    } else if (!loud) {
       // silent for the whole sub-block (a moves monotonically toward ta): only advance the state
       for (let j = 0; j < len; j++) {
-        f += (tf - f) * kF; a += (ta - a) * kG;
+        f += (tf - f) * kF; if (Math.abs(tf - f) < SNAP_F) f = tf;
+        a += (ta - a) * kG; if (Math.abs(ta - a) < SNAP_A) a = ta;
         p += f * inv; if (p >= 1) p -= 1;
       }
     } else {
       for (let j = 0; j < len; j++) {
-        f += (tf - f) * kF; a += (ta - a) * kG;
+        f += (tf - f) * kF; if (Math.abs(tf - f) < SNAP_F) f = tf;
+        a += (ta - a) * kG; if (Math.abs(ta - a) < SNAP_A) a = ta;
         if (a >= EPS || ta >= EPS) buf[j] += a * Math.sin(TWO_PI * p);
         p += f * inv; if (p >= 1) p -= 1;
       }
@@ -310,12 +338,16 @@ export class ChannelSynth {
             s *= WOBBLE_DC + WOBBLE_DEPTH * Math.sin(TWO_PI * (cyc - Math.floor(cyc)) + wp);
           }
           if (stereo) {
-            pl += (tpl - pl) * kG; pr += (tpr - pr) * kG;
+            pl += (tpl - pl) * kG; if (Math.abs(tpl - pl) < SNAP_A) pl = tpl;
+            pr += (tpr - pr) * kG; if (Math.abs(tpr - pr) < SNAP_A) pr = tpr;
             dL[j] += s * pl; dR[j] += s * pr;
           } else dL[j] += s;
         }
-      } else if (stereo) {
-        for (let j = 0; j < len; j++) { pl += (tpl - pl) * kG; pr += (tpr - pr) * kG; }
+      } else if (stereo && (pl !== tpl || pr !== tpr)) {
+        for (let j = 0; j < len; j++) {
+          pl += (tpl - pl) * kG; if (Math.abs(tpl - pl) < SNAP_A) pl = tpl;
+          pr += (tpr - pr) * kG; if (Math.abs(tpr - pr) < SNAP_A) pr = tpr;
+        }
       }
       this.pL[b] = pl; this.pR[b] = pr;
     }
@@ -352,7 +384,8 @@ export class ChannelSynth {
     let gd = this.gd, ge = this.ge;
     const tgd = this.tgd, tge = this.tge;
     for (let j = 0; j < len; j++) {
-      gd += (tgd - gd) * kG; ge += (tge - ge) * kG;
+      gd += (tgd - gd) * kG; if (Math.abs(tgd - gd) < SNAP_A) gd = tgd;
+      ge += (tge - ge) * kG; if (Math.abs(tge - ge) < SNAP_A) ge = tge;
       left[off + j] = dL[j] * gd + eL[j] * ge;
       if (stereo) right[off + j] = dR[j] * gd + eR[j] * ge;
     }
@@ -369,7 +402,10 @@ export class ChannelSynth {
       if ((n0 + j) % COEF_EVERY === 0) {
         for (let k = 0; k < NK; k++) {
           nf[k] += (ntf[k] - nf[k]) * kF16;
+          if (Math.abs(ntf[k] - nf[k]) < SNAP_F) nf[k] = ntf[k];
           if (nf[k] !== cf[k]) this._coef(k);
+          if (Math.abs(z1[k]) < FLUSH) z1[k] = 0;
+          if (Math.abs(z2[k]) < FLUSH) z2[k] = 0;
         }
       }
       const x = noise[np];
@@ -379,7 +415,7 @@ export class ChannelSynth {
         const bk = b0[k], y = bk * x + z1[k];
         z1[k] = -a1[k] * y + z2[k];
         z2[k] = -bk * x - a2[k] * y;
-        ng[k] += (ntg[k] - ng[k]) * kG;
+        ng[k] += (ntg[k] - ng[k]) * kG; if (Math.abs(ntg[k] - ng[k]) < SNAP_A) ng[k] = ntg[k];
         s += ng[k] * y;
       }
       if (stereo) {
