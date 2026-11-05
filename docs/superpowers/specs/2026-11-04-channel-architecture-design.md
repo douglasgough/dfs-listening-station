@@ -113,8 +113,8 @@ One `Transport` object. Nothing else keeps time. It replaces `clockFree`, the `p
 
 - State: `running`, `bpm`, `beat` (double), `source` (`internal` | `midi`). It converts beats to seconds and back, and maps both onto the audio clock (`ctx.currentTime`), which is the final timing authority.
 - **Time value type:**
-  - `{sync: 'beats', div}`: 1/32 up to 16 bars, plus dotted and triplet. Follows tempo.
-  - `{sync: 'free', hz | seconds}`: runs off the transport's elapsed seconds. Ignores tempo, but starts, stops and relocates with the transport.
+  - `{mode: 'beats', div}` (Synced): 1/32 up to 16 bars, plus dotted and triplet. Follows tempo.
+  - `{mode: 'hz' | 'sec', value}` (Free): runs off the transport's elapsed seconds. Ignores tempo, but starts, stops and relocates with the transport.
 - **Consumers:** LFO phase, event generators, envelope triggers, timelines, grain scheduling, takes, loop export.
 - **Stopped:** modulators hold at their current position.
 - **MIDI sync** (Web MIDI, input picker in the header): clock `F8` (24 per quarter note), start `FA`, continue `FB`, stop `FC`, song position `F2`. Tempo is smoothed over the last several ticks; position advances by ticks; MIDI timestamps are mapped to audio time via `getOutputTimestamp()`. With source `midi`, the Play button follows the external transport. If clock pulses stop for about one second while running, the transport holds and shows "clock lost" (no silent free-run).
