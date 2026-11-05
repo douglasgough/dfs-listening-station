@@ -24,6 +24,7 @@
 import { channelView, NUM_CHANNELS } from './schema.js';
 import { evaluate, eventRoutes } from './modulation.js';
 import { timeValuePeriodSec } from './transport.js';
+import { timelineOverrides } from './timeline.js';
 import { evTimes, eventSpec, pickEvent } from '../dsp/events.js';
 import { grainsAt } from '../dsp/grains.js';
 import { buildFrame } from '../dsp/partials.js';
@@ -93,14 +94,27 @@ export function paramsAt(take, base, t) {
 
 /**
  * Effective value of every param at span time t.
- * opts = {tm, triggers?, cc?, take?, loopSec?, loopOffset?}; triggers are on the evaluate sec axis.
+ * opts = {tm, triggers?, cc?, take?, loopSec?, loopOffset?, timelineHold?}; triggers are on the evaluate sec axis.
+ * Order: base params, take overlay, timeline overrides (replace the channel's window params), then
+ * evaluate (matrix routes add on top). timelineHold = per-channel phase (or null) freezing a timeline.
  */
 export function resolveAt(project, t, opts) {
   const { tm } = opts;
   const base = project.state.params;
-  const params = opts.take ? paramsAt(opts.take, base, tm.secAt(t)) : base;
-  return evaluate({ ...project.state, params },
-    { beat: tm.beatAt(t), sec: tm.secAt(t) - (opts.loopOffset || 0) },
+  let values = opts.take ? paramsAt(opts.take, base, tm.secAt(t)) : base;
+  const time = { beat: tm.beatAt(t), sec: tm.secAt(t) - (opts.loopOffset || 0) };
+  const timelines = project.state.timelines || [];
+  let copied = values !== base; // paramsAt already returned a fresh copy
+  for (let c = 0; c < NUM_CHANNELS; c++) {
+    const tl = timelines[c];
+    if (!tl || !Array.isArray(tl.events) || !tl.events.length) continue;
+    const hold = opts.timelineHold ? opts.timelineHold[c] : undefined;
+    const over = timelineOverrides(tl, time, tm.bpm, { loopSec: opts.loopSec, hold });
+    if (!over) continue;
+    if (!copied) { values = { ...values }; copied = true; }
+    for (const [key, v] of Object.entries(over)) values[`ch${c + 1}.${key}`] = v;
+  }
+  return evaluate({ ...project.state, params: values }, time,
     { bpm: tm.bpm, triggers: opts.triggers || {}, cc: opts.cc, loopSec: opts.loopSec });
 }
 
@@ -193,7 +207,7 @@ function bucketEvents(g, b, b1) {
 
 /**
  * Events of channel chIndex (0..3) with t in (from, to], sorted by t.
- * opts = {tm, seed?, cc?, take?, loopSec?, loopOffset?}. Event-time params are evaluated without
+ * opts = {tm, seed?, cc?, take?, loopSec?, loopOffset?, timelineHold?}. Event-time params are evaluated without
  * envelope triggers (an event's own envelope cannot gate it; this also keeps buckets query-independent).
  * None when the transport is stopped, the analysis is null or has no bands, or the channel is
  * disabled at the event time. Non-loop events before transport-elapsed second 0 are not generated.
@@ -213,7 +227,8 @@ export function channelEvents(project, chIndex, from, to, opts) {
   if (!a || !Array.isArray(a.bands) || !a.bands.length) return [];
   const seed = opts.seed ?? DEFAULT_SEED;
   const L = opts.loopSec > 0 ? opts.loopSec : 0;
-  const evalOpts = { tm, cc: opts.cc, take: opts.take, loopSec: opts.loopSec, loopOffset: opts.loopOffset };
+  const evalOpts = { tm, cc: opts.cc, take: opts.take, loopSec: opts.loopSec, loopOffset: opts.loopOffset,
+    timelineHold: opts.timelineHold };
 
   if (!L) {
     const g = { project, c: chIndex, tm, tmB: tm, off: 0, seed, evalOpts, loopSec: 0 };
@@ -252,7 +267,7 @@ export function channelEvents(project, chIndex, from, to, opts) {
  * project = {state, analyses: Array(4)<Analysis|null>, stage: {unit, x0, x1}}
  * span = {startSec, endSec, stepSec}: frames at t_i = startSec + i*stepSec, i < ceil((end-start)/step - 1e-9),
  *   so consecutive spans on the step grid never duplicate a frame.
- * opts = {tm, seed = DEFAULT_SEED, loopSec?, loopOffset?, take?, cc?}; tm is a timeMap made by the caller.
+ * opts = {tm, seed = DEFAULT_SEED, loopSec?, loopOffset?, take?, cc?, timelineHold?}; tm is a timeMap made by the caller.
  * Returns ControlFrame[4][]. Each channel's events with t in (startSec, endSec] ride the frame whose
  * interval (t_i, t_i + step] contains them (so a chunk boundary event rides the same frame either way);
  * in loop mode, earlier-started copies still sounding at startSec ride frame 0.
@@ -261,7 +276,7 @@ export function channelEvents(project, chIndex, from, to, opts) {
  * life in the state (<= 30 s). Pure and deterministic; never touches the Transport.
  */
 export function buildScore(project, span, opts) {
-  const { tm, take, cc, loopSec, loopOffset } = opts;
+  const { tm, take, cc, loopSec, loopOffset, timelineHold } = opts;
   const { startSec, endSec, stepSec } = span;
   const O = loopOffset || 0, loop = loopSec > 0;
   const n = Math.max(0, Math.ceil((endSec - startSec) / stepSec - 1e-9));
@@ -269,7 +284,7 @@ export function buildScore(project, span, opts) {
   if (!n) return frames;
 
   const lookback = maxLife(project.state);
-  const evOpts = { tm, seed: opts.seed ?? DEFAULT_SEED, cc, take, loopSec, loopOffset };
+  const evOpts = { tm, seed: opts.seed ?? DEFAULT_SEED, cc, take, loopSec, loopOffset, timelineHold };
   const events = [], trig = [];
   for (let c = 0; c < NUM_CHANNELS; c++) {
     events.push(channelEvents(project, c, startSec - lookback, endSec, evOpts));
@@ -287,7 +302,7 @@ export function buildScore(project, span, opts) {
       triggers[`ch${c + 1}.env1`] = times;
       triggers[`ch${c + 1}.env2`] = times;
     }
-    const values = resolveAt(project, t, { tm, triggers, cc, take, loopSec, loopOffset });
+    const values = resolveAt(project, t, { tm, triggers, cc, take, loopSec, loopOffset, timelineHold });
     const sec = tm.secAt(t) - O;
     for (let c = 0; c < NUM_CHANNELS; c++) {
       frames[c].push(buildFrame(channelView(values, c), shiftedAnalysis(project, c, values),

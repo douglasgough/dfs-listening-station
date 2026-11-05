@@ -7,6 +7,7 @@ import { createState } from '../../src/core/state.js';
 import { paramDef, NUM_CHANNELS } from '../../src/core/schema.js';
 import { Transport, timeMap } from '../../src/core/transport.js';
 import { envValue } from '../../src/core/modulation.js';
+import { timelineOverrides } from '../../src/core/timeline.js';
 import { analyse } from '../../src/spectrum/analyse.js';
 import { EXAMPLE_LAYERS } from '../../src/spectrum/examples.js';
 
@@ -322,6 +323,114 @@ test('an LFO route to source.shift moves bandF', () => {
   const plainP = project(s => { s.params['ch1.map.snap'] = 0; });
   const ref = buildScore(plainP, { startSec: 0, endSec: 3, stepSec: 0.5 }, { tm: running() });
   assert.deepEqual(f0, Array.from(ref[0][0].bandF));
+});
+
+// ---- timelines -------------------------------------------------------------------------------
+
+const TL = { len: { mode: 'sec', value: 8 }, mode: 'morph', events: [{ t: 0, c: 0.2 }, { t: 0.5, c: 0.8 }] };
+const withTl = (tl = TL, extra = () => {}) => project(s => { s.timelines[0] = structuredClone(tl); extra(s); });
+const SPAN = { startSec: 0, endSec: 8, stepSec: 0.5 };
+
+test('timeline: resolveAt ch1.filter.center follows the evaluator; other channels keep their base', () => {
+  const p = withTl();
+  const tm = running();
+  const base = project();
+  for (const t of [0, 1, 2, 3.3, 4, 6, 7.9, 8, 12]) {
+    const v = resolveAt(p, t, { tm });
+    const want = timelineOverrides(p.state.timelines[0], { beat: tm.beatAt(t), sec: tm.secAt(t) }, tm.bpm)['filter.center'];
+    assert.ok(Math.abs(v['ch1.filter.center'] - want) < 1e-12, `t=${t}`);
+    for (let c = 2; c <= 4; c++) assert.equal(v[`ch${c}.filter.center`], base.state.params[`ch${c}.filter.center`]);
+  }
+  assert.ok(Math.abs(resolveAt(p, 2, { tm })['ch1.filter.center'] - 0.5) < 1e-12);
+});
+
+test('timeline: values replace the base params; unkeyed params keep the base value', () => {
+  const p = withTl();
+  const v = resolveAt(p, 1, { tm: running() });
+  assert.equal(v['ch1.filter.width'], p.state.params['ch1.filter.width']);
+});
+
+test('timeline: a matrix route to filter.center adds on top of the timeline value', () => {
+  const route = s => s.matrix.push({ src: 'g.lfo1', dst: 'ch1.filter.center', amount: 0.2 }); // lfo1 sine .1 Hz: +1 at 2.5 s
+  const tm = running();
+  const without = resolveAt(withTl(), 2.5, { tm })['ch1.filter.center'];
+  const withR = resolveAt(withTl(TL, route), 2.5, { tm })['ch1.filter.center'];
+  assert.ok(withR > without + 0.05, `${withR} vs ${without}`);
+  // and the route does move the base center when there is no timeline
+  const plainR = resolveAt(project(route), 2.5, { tm })['ch1.filter.center'];
+  assert.ok(plainR > project().state.params['ch1.filter.center'] + 0.05);
+});
+
+test('timeline: buildScore frames change as the window moves, and are deterministic', () => {
+  const p = withTl();
+  const a = buildScore(p, SPAN, { tm: running() });
+  const b = buildScore(p, SPAN, { tm: running() });
+  assert.deepEqual(a.map(ch => ch.map(f => plain(f))), b.map(ch => ch.map(f => plain(f))));
+  const f0 = a[0][0], f8 = a[0][8];
+  assert.notDeepEqual(Array.from(f0.bandA), Array.from(f8.bandA));
+});
+
+test('timeline: channels without events are unaffected (frames equal a run with empty timelines)', () => {
+  const p = withTl(TL, busy);
+  const ref = project(busy);
+  const a = buildScore(p, SPAN, { tm: running() });
+  const b = buildScore(ref, SPAN, { tm: running() });
+  for (const c of [1, 2, 3]) assert.deepEqual(a[c].map(f => plain(f)), b[c].map(f => plain(f)), `ch${c + 1}`);
+  assert.notDeepEqual(a[0].map(f => plain(f, { events: false })), b[0].map(f => plain(f, { events: false })));
+});
+
+test('timeline: timelineHold freezes the channel frames across time', () => {
+  const p = withTl();
+  const held = buildScore(p, SPAN, { tm: running(), timelineHold: [0.25, null, null, null] });
+  const ref = Array.from(held[0][0].bandA);
+  for (const f of held[0]) assert.deepEqual(Array.from(f.bandA), ref);
+  const v = resolveAt(p, 3, { tm: running(), timelineHold: [0.25, null, null, null] });
+  assert.ok(Math.abs(v['ch1.filter.center'] - 0.5) < 1e-12);
+  // a null hold means the channel still moves
+  const moving = buildScore(p, SPAN, { tm: running(), timelineHold: [null, null, null, null] });
+  assert.notDeepEqual(Array.from(moving[0][0].bandA), Array.from(moving[0][8].bandA));
+});
+
+test('timeline: loop mode repeats the timeline a whole number of times per loop', () => {
+  const p = withTl({ ...TL, len: { mode: 'sec', value: 3 } });
+  const tm = running();
+  for (const t of [0.3, 1.1, 2.7, 4.4]) {
+    const a = resolveAt(p, t, { tm, loopSec: 10 })['ch1.filter.center'];
+    const b = resolveAt(p, t + 10, { tm, loopSec: 10 })['ch1.filter.center'];
+    assert.ok(Math.abs(a - b) < 1e-12);
+  }
+});
+
+test('timeline: a take overlay and a timeline coexist', () => {
+  const take = { dur: 10, bpm: 120, events: [] };
+  recordChange(take, 2, 'ch1.drone.bands', 0);
+  const p = withTl();
+  const tm = running();
+  const v = resolveAt(p, 3, { tm, take });
+  assert.equal(v['ch1.drone.bands'], 0);
+  assert.ok(Math.abs(v['ch1.filter.center'] - timelineOverrides(p.state.timelines[0], { beat: tm.beatAt(3), sec: 3 }, 120)['filter.center']) < 1e-12);
+  const sc = buildScore(p, { startSec: 0, endSec: 4, stepSec: 0.25 }, { tm, take });
+  for (const f of sc[0]) assert.equal(f.bandA.every(x => x === 0), f.t >= 2, `t=${f.t}`);
+});
+
+test('timeline: a take value for an overridden param is replaced by the timeline', () => {
+  const take = { dur: 10, bpm: 120, events: [] };
+  recordChange(take, 0, 'ch1.filter.center', 0.9);
+  const v = resolveAt(withTl(), 2, { tm: running(), take });
+  assert.ok(Math.abs(v['ch1.filter.center'] - 0.5) < 1e-12);
+});
+
+test('timeline: purity with deep-frozen inputs', () => {
+  const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); Object.values(o).forEach(deepFreeze); } return o; };
+  const p = withTl(TL, busy);
+  const before = structuredClone(p);
+  const hold = deepFreeze([0.1, null, null, null]);
+  deepFreeze(p.state);
+  const sc = buildScore(p, SPAN, { tm: running(), timelineHold: hold, loopSec: 8 });
+  assert.equal(sc.length, 4);
+  assert.deepEqual(p, before);
+  resolveAt(p, 1, { tm: running() });
+  assert.deepEqual(p, before);
 });
 
 // ---- performance and purity ------------------------------------------------------------------
